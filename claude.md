@@ -24,7 +24,13 @@ Trigger → n8n Table: Load Env Vars → Code: Build Config → <rest of pipelin
 - Type: `n8n-nodes-base.code`, typeVersion `2`.
 - Settings: `onError: "stopWorkflow"`.
 - Notes: `"Builds flat Name→Value map from EnvironmentVariables rows. Access values as: $('Code: Build Config').first().json.KeyName"`.
-- Body (canonical form):
+
+#### Required vs optional keys
+
+- **Required keys** are validated in Build Config and throw if missing — anything the workflow cannot run without (API keys, model identifiers, folder IDs, role prompts, thresholds).
+- **Optional keys** are not validated; downstream code reads them with an inline fallback: `cfg.canon_audience || 'Adults 25-45...'`. Lets the workflow degrade gracefully when a non-critical key is missing.
+
+Canonical Build Config body:
 
 ```javascript
 const items = $input.all();
@@ -38,7 +44,7 @@ for (const item of items) {
 }
 
 const requiredKeys = [
-  // List every key this workflow needs, in any order
+  // List every key the workflow cannot run without
 ];
 
 for (const key of requiredKeys) {
@@ -50,10 +56,11 @@ for (const key of requiredKeys) {
 return [{ json: cfg }];
 ```
 
-Always validate. Never let a missing key surface as a downstream HTTP 401 or a confusing parse error.
+Always validate required keys. Never let a missing required key surface as a downstream HTTP 401 or a confusing parse error.
 
 ### Trigger choice
-- `n8n-nodes-base.manualTrigger` for batch/orchestrator-driven workflows that pick jobs from tables.
+
+- `n8n-nodes-base.manualTrigger` for batch / orchestrator-driven workflows that pick jobs from tables.
 - `n8n-nodes-base.webhook` for synchronous request–response workflows. Pattern: `httpMethod: "POST"`, `path: "<slug>"`, `responseMode: "lastNode"` so the last node's `$json` becomes the HTTP response body.
 - `n8n-nodes-base.formTrigger` for interactive personal-use workflows where the user submits via a form UI.
 
@@ -94,7 +101,7 @@ Never hardcode API keys, model names, prompts, folder IDs, or thresholds in node
 
 ### Defensive parsing
 
-Wrap every `JSON.parse` in a try/catch. Throw with a `[Node Name]` prefix:
+Wrap every `JSON.parse` of stored data (table values, env vars, prior step output) in a try/catch. Throw with a `[Node Name]` prefix:
 
 ```javascript
 let parsed;
@@ -105,9 +112,9 @@ try {
 }
 ```
 
-When parsing LLM output, use the JSON-extraction helper (Section 6) — LLMs occasionally wrap JSON in prose or markdown fences.
+When parsing **LLM output** specifically, use the dedicated helpers in Section 6 — LLMs occasionally wrap JSON in prose or markdown fences and need fence-stripping plus regex-extraction fallbacks.
 
-### Validation
+### Validation and clamping
 
 After parsing, validate shape and throw early:
 
@@ -116,6 +123,24 @@ if (!Array.isArray(parsed) || parsed.length === 0) {
   throw new Error('[Build Scenes Prompt] scene_plan_json is empty or invalid.');
 }
 ```
+
+Never trust LLM-supplied numbers to be in the range you asked for. Clamp with small helpers:
+
+```javascript
+function toBinaryScore(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) { return 0; }
+  return num >= 1 ? 1 : 0;
+}
+
+function toBoundedScore(value, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) { return min; }
+  return Math.max(min, Math.min(max, Math.round(num)));
+}
+```
+
+A model asked for an integer 1–10 will occasionally return `9.5`, `"8"`, `null`, or `"strong"`. Clamping turns "model misbehaviour" into "predictable downstream behaviour".
 
 ### Accessing prior node outputs
 
@@ -192,7 +217,7 @@ Payload shape: `{ model, temperature, max_completion_tokens, messages: [{role, c
 
 Payload shape: `{ model, max_tokens, system, messages: [{role: "user", content}], thinking?: { type: "enabled", budget_tokens: <n> } }`.
 
-When extended thinking is enabled, the response `content[]` array contains both `type: "thinking"` and `type: "text"` blocks. Extract only the `text` blocks for downstream use; pass `thinking` blocks through to logs only.
+When extended thinking is enabled, the response `content[]` array contains both `type: "thinking"` and `type: "text"` blocks. Use `extractAnthropicText` from Section 6 to get text only; pass `thinking` blocks through to logs.
 
 ### Gemini
 
@@ -216,7 +241,7 @@ When extended thinking is enabled, the response `content[]` array contains both 
 
 Payload shape: `{ system_instruction: { parts: [{ text }] }, contents: [{ role: "user", parts: [{ text }] }], generationConfig: { responseMimeType: "application/json", temperature } }`.
 
-Extract response text from `candidates[0].content.parts[0].text`.
+Extract response text from `candidates[0].content.parts[0].text` via the helper in Section 6.
 
 ### Batching for fan-out
 
@@ -238,7 +263,8 @@ Five concurrent requests, 2.5-second interval between bursts. Tune up only if th
 ### Settings on HTTP nodes
 
 - Single-shot synchronous calls (one item in → one item out): `onError: "continueRegularOutput"` so a single failure produces a parseable error item rather than killing the workflow.
-- The downstream parse Code node is responsible for detecting the error item and either failing loudly or carrying a default failure structure forward.
+- Fan-out batched calls: same — `onError: "continueRegularOutput"` so one failed item doesn't kill the batch.
+- The downstream parse Code node is responsible for detecting the error item and either failing loudly (sync workflows) or carrying a default failure structure forward (batch workflows). See Section 6.
 
 ---
 
@@ -277,27 +303,116 @@ For "pick one job from a table and process it" workflows, set `lock_until` and `
 
 ---
 
-## 6. JSON-extraction helper for LLM responses
+## 6. Parsing LLM responses
 
-LLMs occasionally wrap JSON output in markdown fences or add prose. Use this helper inside any Code node that parses LLM responses:
+LLMs occasionally wrap JSON output in markdown fences, add prose preambles, or vary the response container shape. Use the helpers below inside any Code node that parses LLM responses.
+
+### Generic JSON parser
 
 ```javascript
 function parseJsonObject(rawText) {
   if (!rawText) {
     throw new Error('Empty response text');
   }
-  const cleaned = String(rawText).trim();
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) {
-    throw new Error('No JSON object found in response');
+  const cleaned = String(rawText).trim()
+    .replace(/^```[\w-]*[\r\n]+/, '')
+    .replace(/[\r\n]+```$/, '')
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (error) {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (!match) { throw error; }
+    return JSON.parse(match[0]);
   }
-  return JSON.parse(match[0]);
 }
 ```
 
-For arrays, swap the regex to `/\[[\s\S]*\]/` and the error message accordingly.
+Strategy: strip fence markers first, try direct parse, fall back to regex extraction of the first `{...}` block. For arrays, swap the regex to `/\[[\s\S]*\]/`.
 
-System prompts should always end with: *"Output ONLY a single JSON object. No commentary outside the JSON. No markdown fences."* — but assume models will violate this occasionally and parse defensively.
+### Anthropic text extractor
+
+The Anthropic Messages API returns `content[]` blocks of varying types. Use this to get the text payload before parsing:
+
+```javascript
+function extractAnthropicText(httpItem) {
+  const contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];
+  const text = contentArr
+    .filter(function(block) { return block && block.type === 'text'; })
+    .map(function(block) { return String(block.text || ''); })
+    .join('\n')
+    .trim();
+  return text || String(httpItem.output_text || httpItem.completion || '');
+}
+```
+
+Combined usage:
+
+```javascript
+const rawText = extractAnthropicText(items[0].json);
+const parsed = parseJsonObject(rawText);
+```
+
+### OpenAI text extractor
+
+```javascript
+function extractOpenAIText(httpItem) {
+  return String(httpItem?.choices?.[0]?.message?.content || '');
+}
+```
+
+### Gemini text extractor
+
+```javascript
+function extractGeminiText(httpItem) {
+  const parts = httpItem?.candidates?.[0]?.content?.parts || [];
+  return parts.map(function(p) { return String(p.text || ''); }).join('\n');
+}
+```
+
+### Always reinforce in the system prompt
+
+Even with robust parsers, instruct the model to comply: end every system prompt that expects JSON with *"Output ONLY a single JSON object. No commentary outside the JSON. No markdown fences."* Defensive parsing is a safety net, not a substitute.
+
+### Parse-failure strategies
+
+Two acceptable strategies depending on workflow type:
+
+**Throw** — for synchronous / single-shot workflows where a parse failure is fatal:
+
+```javascript
+let parsed;
+try {
+  parsed = parseJsonObject(extractAnthropicText(items[0].json));
+} catch (error) {
+  throw new Error('[Parse QA Response] ' + error.message);
+}
+```
+
+**Default-and-continue** — for batch fan-out workflows where one bad item shouldn't kill the run. Build a structured failure object with sentinel values that downstream nodes can route on:
+
+```javascript
+function buildParseFailure(jobId, errorMessage) {
+  return {
+    job_id: String(jobId),
+    verdict: 'PARSE_ERROR',
+    overall_score: 0,
+    // ...all fields downstream code expects, set to safe sentinels
+    parse_error: String(errorMessage || 'Unknown parse error')
+  };
+}
+
+let parsed;
+try {
+  parsed = parseJsonObject(extractAnthropicText(httpItem));
+} catch (error) {
+  results.push({ json: buildParseFailure(jobId, error.message) });
+  continue;
+}
+```
+
+The shape of the failure object must match the success shape so downstream IF/Merge/update nodes don't crash on missing fields. Pick sentinel values that route to the failure branch in any IF gate (e.g. `overall_score: 0` if the threshold is `>= 5`).
 
 ---
 
@@ -364,7 +479,7 @@ return [{
 }];
 ```
 
-Standard statuses: `APPROVED`, `REJECTED`, `RETRY`. Add domain-specific ones (e.g. `QA_PASSED`, `QA_FAILED`, `QA_PARSE_ERROR`) when needed; document them in the workflow's first-node `notes`.
+Standard statuses: `APPROVED`, `REJECTED`, `RETRY`. Add domain-specific ones (e.g. `QA_PASSED`, `QA_FAILED`, `QA_PARSE_ERROR`, `REVIEW_APPROVED`, `NEEDS_REWORK`) when needed; document them in the workflow's first-node `notes`.
 
 ### Webhook response shape
 
@@ -474,9 +589,10 @@ Don't:
 
 - Use native LLM nodes (`@n8n/n8n-nodes-langchain.*`, `n8n-nodes-base.openAi`, etc.). Always HTTP Request.
 - Hardcode credentials, model names, folder IDs, prompts, or thresholds anywhere except `EnvironmentVariables`.
-- Skip the `Code: Build Config` validation step. Missing keys must surface there, not deep in the pipeline.
-- Use `JSON.parse` without try/catch.
-- Trust LLM JSON output without the regex-extraction helper.
+- Skip the `Code: Build Config` validation step. Missing required keys must surface there, not deep in the pipeline.
+- Use `JSON.parse` on LLM output directly. Always go through `parseJsonObject` (Section 6).
+- Trust LLM-supplied numbers without clamping. Always normalise to expected range.
+- Throw on parse failure inside batch fan-out workflows. Use the default-and-continue strategy from Section 6.
 - Leave `notes` empty on any node.
 - Use `responseMode: "responseNode"` with a separate "Respond to Webhook" node for sync workflows. Use `responseMode: "lastNode"` and shape the last Code node's output to be the response.
 - Add caching, queues, observability, or notification side-effects unless the RACE prompt explicitly asks for them. Stay minimal.
@@ -491,12 +607,13 @@ Before returning the JSON, verify:
 1. The JSON parses as valid JSON.
 2. Every node has a unique `id` (UUID v4).
 3. Every node referenced in `connections` exists in `nodes`.
-4. The Build Config `requiredKeys` array contains every key actually used downstream.
+4. The Build Config `requiredKeys` array contains every key actually used downstream as required (optional keys with `cfg.foo || 'default'` fallbacks are excluded).
 5. Every Code node uses the `[Node Name]` error-prefix convention.
 6. No hardcoded secrets, model names, folder IDs, or prompt strings outside `EnvironmentVariables` references.
 7. `onError` settings match the table in Section 9.
 8. Every node has a non-empty `notes` field.
-9. If there's a loop, the iteration cap is enforced by an IF condition that reads `retry_count` from `$json`, and the cap value comes from `EnvironmentVariables`.
+9. Every LLM-response Code node uses the helpers from Section 6 — no raw `JSON.parse` on model output.
+10. If there's a loop, the iteration cap is enforced by an IF condition that reads `retry_count` from `$json`, and the cap value comes from `EnvironmentVariables`.
 
 Surface any deviation in a final note at the top of the JSON output (as a workflow-level `notes` field on the trigger), not in surrounding prose.
 
@@ -504,10 +621,8 @@ Surface any deviation in a final note at the top of the JSON output (as a workfl
 
 ## 15. Reference workflows
 
-These attached samples illustrate the conventions in production form. Refer to them when the conventions document is ambiguous; refer to this document when the samples conflict (samples may carry domain-specific patches that aren't general convention):
+These samples illustrate the conventions in production form. They live in the `samples/` sibling directory to this file and will be brought into context via `@samples/<filename>` when the per-task RACE prompt references them. Treat them as oracles for *how* to write nodes; treat this document as the oracle for *which* conventions to follow. When the samples conflict with this document, this document wins (samples may carry domain-specific patches that aren't general convention).
 
-- `script-to-scenes--generational-slang.json` — manual trigger, single LLM (OpenAI), Drive upload, parallel scenes/images branches.
-- `qa-scoring--three-gens-talks.json` — webhook trigger, single LLM (OpenAI), multi-branch IF gating, state-bearing outputs (APPROVED/REJECTED/RETRY).
-- `script-qa-gate--all-channels.json` — manual trigger, dual LLM (OpenAI + Anthropic), batching, fan-out across multiple jobs, DataTable updates.
-
-The samples are oracles for *how* to write nodes; this document is the oracle for *which* conventions to follow.
+- `samples/script-to-scenes--generational-slang.json` — manual trigger, single LLM (OpenAI), Drive upload, parallel scenes/images branches.
+- `samples/qa-scoring--three-gens-talks.json` — webhook trigger, single LLM (OpenAI), multi-branch IF gating, state-bearing outputs (APPROVED / REJECTED / RETRY).
+- `samples/script-qa-gate--all-channels.json` — manual trigger, dual LLM (OpenAI + Anthropic), batching, fan-out across multiple jobs, DataTable updates.
