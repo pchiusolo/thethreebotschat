@@ -1,0 +1,466 @@
+{
+  "name": "QA Scoring – Three Gens Talks",
+  "description": "Patch summary: Migrated OpenAI auth to EnvironmentVariables / Build Config pattern. Aligned returned QA field names with canonical Three Gens pipeline vocabulary (hook_strength, interaction_quality, naturalness, standalone_clarity, engagement_payoff). Preserved webhook-based external evaluator role. Kept strict JSON output and hard-fail logic.",
+  "nodes": [
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560001",
+      "name": "Webhook: Receive Script",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ],
+      "webhookId": "three-gens-qa-scoring-v1",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "qa-scoring",
+        "responseMode": "lastNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560010",
+      "name": "n8n Table: Load Env Vars",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "gX1ssNBHaM9hL1nk"
+        },
+        "returnAll": true
+      },
+      "alwaysOutputData": true,
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560011",
+      "name": "Code: Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nconst cfg = {};\nfor (const item of rows) {\n  cfg[item.json.Name] = item.json.Value;\n}\n\nconst requiredKeys = ['OpenAI_ApiKey'];\n\nfor (const key of requiredKeys) {\n  if (!cfg[key]) {\n    throw new Error('[Build Config] Missing required key: ' + key + '. Add it to EnvironmentVariables table.');\n  }\n}\n\nreturn [{ json: cfg }];\n"
+      },
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560002",
+      "name": "Code: Build QA Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const input = $('Webhook: Receive Script').first().json;\n\nconst systemPrompt =\n  'You are a strict QA evaluator for YouTube Shorts scripts for the \"Three Gens Talks\" channel. ' +\n  'The channel features three generations (grandmother/SAM, mother/ALEX, daughter/RILEY) in short ' +\n  'conversational clips. Return ONLY valid JSON with no additional text, markdown, or explanation.';\n\nconst scriptText = JSON.stringify(input.script, null, 2);\n\nconst userPrompt =\n  'Evaluate this YouTube Shorts script for quality assurance.\\n\\n' +\n  'Idea ID: ' + input.idea_id + '\\n' +\n  'Idea Title: ' + input.idea_title + '\\n\\n' +\n  'Script:\\n' + scriptText + '\\n\\n' +\n  'Score each dimension from 1 to 10:\\n' +\n  '- hook_strength: Does the opening hook the viewer immediately within 2 seconds?\\n' +\n  '- interaction_quality: Does dialogue feel like a real 3-way conversation with genuine reactions?\\n' +\n  '- naturalness: Does the dialogue sound like real speech not scripted performance?\\n' +\n  '- standalone_clarity: Would a viewer with no context understand and enjoy this?\\n' +\n  '- engagement_payoff: Does the ending land with a satisfying twist, laugh, or insight that drives engagement?\\n' +\n  '- moment_clarity: (auxiliary) Is there a single clear specific relatable moment driving the script?\\n' +\n  '- escalation_strength: (auxiliary) Does tension or humor escalate naturally toward the payoff?\\n' +\n  '- persona_distinction: (auxiliary) Are all three personas clearly distinct in voice and perspective?\\n' +\n  '- relatability: (auxiliary) Will multigenerational families immediately recognize this situation?\\n' +\n  '- safety_brand_fit: (auxiliary hard gate) Is content safe for all ages and aligned with a warm positive brand?\\n\\n' +\n  'Hard fail conditions — list the reason string in hard_fail_reasons if triggered:\\n' +\n  '- no valid relatable moment identified\\n' +\n  '- hook_strength below 7\\n' +\n  '- interaction_quality below 7\\n' +\n  '- escalation_strength below 7\\n' +\n  '- engagement_payoff below 6\\n' +\n  '- safety_brand_fit below 9\\n' +\n  '- invalid script format\\n' +\n  '- personas are interchangeable (same voice could say any line)\\n' +\n  '- content is explanatory or informational rather than conversational and dramatic\\n\\n' +\n  'Return ONLY this exact JSON structure with no other text:\\n' +\n  '{\\n' +\n  '  \"scores\": {\\n' +\n  '    \"hook_strength\": 0,\\n' +\n  '    \"interaction_quality\": 0,\\n' +\n  '    \"naturalness\": 0,\\n' +\n  '    \"standalone_clarity\": 0,\\n' +\n  '    \"engagement_payoff\": 0,\\n' +\n  '    \"moment_clarity\": 0,\\n' +\n  '    \"escalation_strength\": 0,\\n' +\n  '    \"persona_distinction\": 0,\\n' +\n  '    \"relatability\": 0,\\n' +\n  '    \"safety_brand_fit\": 0\\n' +\n  '  },\\n' +\n  '  \"hard_fail_reasons\": [],\\n' +\n  '  \"main_issues\": [],\\n' +\n  '  \"fix_instructions\": [],\\n' +\n  '  \"decision\": \"APPROVED\"\\n' +\n  '}';\n\nreturn [{\n  json: {\n    idea_id: input.idea_id,\n    idea_title: input.idea_title,\n    script: input.script,\n    retry_count: input.retry_count || 0,\n    prompt_version: input.prompt_version,\n    content_strategy_version: input.content_strategy_version,\n    openai_payload: {\n      model: 'gpt-4o',\n      temperature: 0.1,\n      response_format: { type: 'json_object' },\n      messages: [\n        { role: 'system', content: systemPrompt },\n        { role: 'user', content: userPrompt }\n      ]\n    }\n  }\n}];\n"
+      },
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560003",
+      "name": "HTTP: QA Scoring LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1160,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $('Code: Build Config').first().json.OpenAI_ApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.openai_payload) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560004",
+      "name": "Code: Parse QA Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const openaiResponse = items[0].json;\nconst sourceData = $('Code: Build QA Prompt').first().json;\n\nconst originalInput = {\n  idea_id: sourceData.idea_id,\n  idea_title: sourceData.idea_title,\n  script: sourceData.script,\n  retry_count: sourceData.retry_count || 0,\n  prompt_version: sourceData.prompt_version,\n  content_strategy_version: sourceData.content_strategy_version\n};\n\nlet qaResult;\ntry {\n  const responseContent = openaiResponse.choices[0].message.content;\n  qaResult = JSON.parse(responseContent);\n} catch (e) {\n  return [{\n    json: {\n      ...originalInput,\n      scores: {\n        hook_strength: 0, interaction_quality: 0, naturalness: 0,\n        standalone_clarity: 0, engagement_payoff: 0,\n        moment_clarity: 0, escalation_strength: 0, persona_distinction: 0,\n        relatability: 0, safety_brand_fit: 0\n      },\n      hook_strength: 0,\n      interaction_quality: 0,\n      naturalness: 0,\n      standalone_clarity: 0,\n      engagement_payoff: 0,\n      weighted_score: 0,\n      hard_fail: true,\n      hard_fail_reasons: ['LLM_PARSE_ERROR: ' + e.message],\n      main_issues: ['Failed to parse QA evaluator response'],\n      fix_instructions: ['Re-run QA evaluation'],\n      qa_decision: 'REJECTED',\n      qa_timestamp: new Date().toISOString()\n    }\n  }];\n}\n\nconst scores = qaResult.scores;\n\nconst weighted_score = parseFloat((\n  0.16 * (scores.hook_strength || 0) +\n  0.14 * (scores.interaction_quality || 0) +\n  0.14 * (scores.engagement_payoff || 0) +\n  0.14 * (scores.escalation_strength || 0) +\n  0.12 * (scores.moment_clarity || 0) +\n  0.10 * (scores.naturalness || 0) +\n  0.08 * (scores.standalone_clarity || 0) +\n  0.08 * (scores.persona_distinction || 0) +\n  0.02 * (scores.relatability || 0) +\n  0.02 * (scores.safety_brand_fit || 0)\n).toFixed(2));\n\nconst hardFailReasons = Array.isArray(qaResult.hard_fail_reasons) ? [...qaResult.hard_fail_reasons] : [];\n\nif (scores.hook_strength < 7)\n  hardFailReasons.push('hook_strength ' + scores.hook_strength + ' below threshold 7');\nif (scores.interaction_quality < 7)\n  hardFailReasons.push('interaction_quality ' + scores.interaction_quality + ' below threshold 7');\nif (scores.escalation_strength < 7)\n  hardFailReasons.push('escalation_strength ' + scores.escalation_strength + ' below threshold 7');\nif (scores.engagement_payoff < 6)\n  hardFailReasons.push('engagement_payoff ' + scores.engagement_payoff + ' below threshold 6');\nif (scores.safety_brand_fit < 9)\n  hardFailReasons.push('safety_brand_fit ' + scores.safety_brand_fit + ' below threshold 9');\n\nconst hard_fail = hardFailReasons.length > 0;\n\nlet qa_decision;\nif (hard_fail) {\n  qa_decision = 'REJECTED';\n} else if (\n  weighted_score >= 8.2 &&\n  scores.hook_strength >= 8 &&\n  scores.escalation_strength >= 8 &&\n  scores.interaction_quality >= 8\n) {\n  qa_decision = 'APPROVED';\n} else if (weighted_score >= 6.8) {\n  qa_decision = 'RETRY';\n} else {\n  qa_decision = 'REJECTED';\n}\n\nreturn [{\n  json: {\n    ...originalInput,\n    scores,\n    hook_strength: scores.hook_strength || 0,\n    interaction_quality: scores.interaction_quality || 0,\n    naturalness: scores.naturalness || 0,\n    standalone_clarity: scores.standalone_clarity || 0,\n    engagement_payoff: scores.engagement_payoff || 0,\n    weighted_score,\n    hard_fail,\n    hard_fail_reasons: hardFailReasons,\n    main_issues: qaResult.main_issues || [],\n    fix_instructions: qaResult.fix_instructions || [],\n    qa_decision,\n    qa_timestamp: new Date().toISOString()\n  }\n}];\n"
+      },
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560005",
+      "name": "IF: Hard Fail",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1640,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-hard-fail",
+              "leftValue": "={{ $json.hard_fail }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef123456000b",
+      "name": "Code: Output REJECTED Hard Fail",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        140
+      ],
+      "parameters": {
+        "jsCode": "const input = items[0].json;\nreturn [{\n  json: {\n    status: 'REJECTED',\n    rejection_type: 'HARD_FAIL',\n    pipeline_stage: 'archive',\n    idea_id: input.idea_id,\n    idea_title: input.idea_title,\n    retry_count: input.retry_count,\n    prompt_version: input.prompt_version,\n    content_strategy_version: input.content_strategy_version,\n    qa_result: {\n      weighted_score: input.weighted_score,\n      hook_strength: input.hook_strength,\n      interaction_quality: input.interaction_quality,\n      naturalness: input.naturalness,\n      standalone_clarity: input.standalone_clarity,\n      engagement_payoff: input.engagement_payoff,\n      scores: input.scores,\n      hard_fail_reasons: input.hard_fail_reasons,\n      main_issues: input.main_issues,\n      fix_instructions: input.fix_instructions,\n      decision: 'REJECTED',\n      qa_timestamp: input.qa_timestamp\n    }\n  }\n}];\n"
+      },
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560006",
+      "name": "IF: Approved",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-weighted-score",
+              "leftValue": "={{ $json.weighted_score }}",
+              "rightValue": 8.2,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "cond-hook",
+              "leftValue": "={{ $json.scores.hook_strength }}",
+              "rightValue": 8,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "cond-escalation",
+              "leftValue": "={{ $json.scores.escalation_strength }}",
+              "rightValue": 8,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "cond-interaction",
+              "leftValue": "={{ $json.scores.interaction_quality }}",
+              "rightValue": 8,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560009",
+      "name": "Code: Output APPROVED",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2120,
+        140
+      ],
+      "parameters": {
+        "jsCode": "const input = items[0].json;\nreturn [{\n  json: {\n    status: 'APPROVED',\n    pipeline_stage: 'voiceover',\n    idea_id: input.idea_id,\n    idea_title: input.idea_title,\n    script: input.script,\n    retry_count: input.retry_count,\n    prompt_version: input.prompt_version,\n    content_strategy_version: input.content_strategy_version,\n    qa_result: {\n      weighted_score: input.weighted_score,\n      hook_strength: input.hook_strength,\n      interaction_quality: input.interaction_quality,\n      naturalness: input.naturalness,\n      standalone_clarity: input.standalone_clarity,\n      engagement_payoff: input.engagement_payoff,\n      scores: input.scores,\n      decision: 'APPROVED',\n      qa_timestamp: input.qa_timestamp\n    }\n  }\n}];\n"
+      },
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560007",
+      "name": "IF: Retry Eligible",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2120,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-score-retry",
+              "leftValue": "={{ $json.weighted_score }}",
+              "rightValue": 6.8,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "cond-retry-count",
+              "leftValue": "={{ $json.retry_count }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234560008",
+      "name": "Code: Increment Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2360,
+        140
+      ],
+      "parameters": {
+        "jsCode": "const input = items[0].json;\nreturn [{\n  json: {\n    ...input,\n    retry_count: (input.retry_count || 0) + 1\n  }\n}];\n"
+      },
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef123456000a",
+      "name": "Code: Output RETRY",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        140
+      ],
+      "parameters": {
+        "jsCode": "const input = items[0].json;\nreturn [{\n  json: {\n    status: 'RETRY',\n    pipeline_stage: 'script_generator',\n    idea_id: input.idea_id,\n    idea_title: input.idea_title,\n    script: input.script,\n    retry_count: input.retry_count,\n    prompt_version: input.prompt_version,\n    content_strategy_version: input.content_strategy_version,\n    qa_result: {\n      weighted_score: input.weighted_score,\n      hook_strength: input.hook_strength,\n      interaction_quality: input.interaction_quality,\n      naturalness: input.naturalness,\n      standalone_clarity: input.standalone_clarity,\n      engagement_payoff: input.engagement_payoff,\n      scores: input.scores,\n      hard_fail_reasons: input.hard_fail_reasons,\n      main_issues: input.main_issues,\n      fix_instructions: input.fix_instructions,\n      decision: 'RETRY',\n      qa_timestamp: input.qa_timestamp\n    }\n  }\n}];\n"
+      },
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef123456000c",
+      "name": "Code: Output REJECTED",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2360,
+        460
+      ],
+      "parameters": {
+        "jsCode": "const input = items[0].json;\nconst rejection_type = (input.retry_count || 0) >= 2 ? 'MAX_RETRIES_EXCEEDED' : 'LOW_SCORE';\nreturn [{\n  json: {\n    status: 'REJECTED',\n    rejection_type,\n    pipeline_stage: 'archive',\n    idea_id: input.idea_id,\n    idea_title: input.idea_title,\n    retry_count: input.retry_count,\n    prompt_version: input.prompt_version,\n    content_strategy_version: input.content_strategy_version,\n    qa_result: {\n      weighted_score: input.weighted_score,\n      hook_strength: input.hook_strength,\n      interaction_quality: input.interaction_quality,\n      naturalness: input.naturalness,\n      standalone_clarity: input.standalone_clarity,\n      engagement_payoff: input.engagement_payoff,\n      scores: input.scores,\n      hard_fail_reasons: input.hard_fail_reasons || [],\n      main_issues: input.main_issues,\n      fix_instructions: input.fix_instructions,\n      decision: 'REJECTED',\n      qa_timestamp: input.qa_timestamp\n    }\n  }\n}];\n"
+      },
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook: Receive Script": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Load Env Vars",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Load Env Vars": {
+      "main": [
+        [
+          {
+            "node": "Code: Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Config": {
+      "main": [
+        [
+          {
+            "node": "Code: Build QA Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build QA Prompt": {
+      "main": [
+        [
+          {
+            "node": "HTTP: QA Scoring LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: QA Scoring LLM": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse QA Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse QA Response": {
+      "main": [
+        [
+          {
+            "node": "IF: Hard Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Hard Fail": {
+      "main": [
+        [
+          {
+            "node": "Code: Output REJECTED Hard Fail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF: Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Approved": {
+      "main": [
+        [
+          {
+            "node": "Code: Output APPROVED",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF: Retry Eligible",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Retry Eligible": {
+      "main": [
+        [
+          {
+            "node": "Code: Increment Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code: Output REJECTED",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Increment Retry": {
+      "main": [
+        [
+          {
+            "node": "Code: Output RETRY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "c1d2e3f4-a1b2-c3d4-e5f6-a7b8c9d0e1f2",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "64a04bbfa553a6ed8ce67fc008973a3dcc3ed6643470422bbe3c9cbd17a4a383"
+  },
+  "id": "QAScoringThreeGensTalks",
+  "tags": []
+}

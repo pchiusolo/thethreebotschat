@@ -1,0 +1,1902 @@
+{
+  "name": "Script QA Gate – All Channels",
+  "description": "--- Patch Summary ---\n- Removed legacy prompt-load chain (n8n Table: Load Prompt A/B, Code: Extract Prompt A/B)\n- Removed Code: Inject Canon Header; no [CANON HEADER] replacement remains\n- Code: Build Config requires 10 keys including GPT_Temperature and four creative env keys\n- Code: Build QA Prompts is now a thin assembler: no hardcoded creative prose; getCreativeSpec() removed\n- Creative instructions and schemas come from cfg.qa_creative_instructions_shorts/podcast and cfg.qa_creative_schema_shorts/podcast\n- Reviewer A (OpenAI): system=prompt_canon_header, user=prompt_qa_reviewer_a with substitution, model=gpt-5.4-mini, temperature=Number(config.GPT_Temperature), max_completion_tokens\n- Reviewer B (Claude): system=prompt_canon_header, user=prompt_qa_reviewer_b with substitution, model=claude-sonnet-4-5 with extended thinking\n- All scoring/merge/writeback logic unchanged\n\n--- Notes ---\nqa_score field: qa_score is mapped from editorial_total_score for compatibility. It is an integer 0-5 counting editorial gates passed. creative_average is stored separately as a float. No combined blended QA score is currently written.\n\nShorts QA normalization priority: (1) turns_json array of {speaker, text} with valid speakers SAM/ALEX/JORDAN/RILEY, (2) narration_script with dialogue[] array (shorts_dialogue_v2 compatible), (3) raw narration_script string fallback. Structured fields turns_json, beats_json, hook_line, title_moment are passed through as QA context.\n\nDatabase interactions:\n- Reads from Jobs: turns_json, beats_json, hook_line, title_moment, narration_script, script_state, qa_state\n- Writes to Jobs: qa_state, qa_score, qa_notes, qa_approved, gate_accuracy, gate_continuity, gate_non_misleading, gate_bias_free, gate_audience_fit, hook_strength, interaction_quality, naturalness, standalone_clarity, engagement_payoff, editorial_total_score, creative_average\n- Writes to Podcast_Jobs: qa_state, qa_score, qa_notes, qa_approved, gate_*, editorial_total_score, creative_average, dialogue_naturalness, persona_distinctness, escalation_quality, host_moderation_quality, section_flow\n- No schema migration required",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "df9a615f-ba84-49d8-8ae0-2d87fa7c0e4c",
+      "name": "Trigger: Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1568,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Runs after topic-to-script or podcast-topic-to-script. Processes all jobs where script_state = 'READY' and qa_state is null/empty. IMPORTANT: Add qa_state, qa_score, qa_notes columns to both Jobs tables before first run. Update render orchestrators to check qa_state = 'QA_PASSED' before proceeding.\n\nShorts QA: prefers turns_json (valid speakers: SAM/ALEX/JORDAN/RILEY) over narration_script dialogue[] fallback, with raw string as last resort. beats_json, hook_line, and title_moment are passed through as structured QA context. Reads from Jobs: turns_json, beats_json, hook_line, title_moment, narration_script. No schema migration required. Podcast path unchanged."
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "gX1ssNBHaM9hL1nk"
+        },
+        "returnAll": true
+      },
+      "id": "625d8ce3-6cdd-4693-92f6-6993d474a47f",
+      "name": "n8n Table: Load Env Vars",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -1344,
+        96
+      ],
+      "alwaysOutputData": true,
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst cfg = {};\nfor (const item of items) {\n  cfg[item.json.Name] = item.json.Value;\n}\n\nconst requiredKeys = [\n  'OpenAI_ApiKey',\n  'Anthropic_ApiKey',\n  'prompt_canon_header',\n  'prompt_qa_reviewer_a',\n  'prompt_qa_reviewer_b',\n  'GPT_Temperature',\n  'qa_creative_instructions_shorts',\n  'qa_creative_schema_shorts',\n  'qa_creative_instructions_podcast',\n  'qa_creative_schema_podcast'\n];\n\nfor (const key of requiredKeys) {\n  if (!cfg[key]) {\n    throw new Error('[Build Config] Missing required key: ' + key + '. Add it to EnvironmentVariables table.');\n  }\n}\n\nreturn [{ json: cfg }];"
+      },
+      "id": "cd148c19-b8c0-448e-a2a9-3f429250cc5c",
+      "name": "Code: Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1120,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "KAQ2mU82hSbTWl7J"
+        },
+        "returnAll": true
+      },
+      "id": "1d0a0f9e-4aeb-4f67-82fd-709f0859bba7",
+      "name": "n8n Table: Get Shorts Jobs",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "alwaysOutputData": true,
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "FeNCIdXZyeKeaeFc"
+        },
+        "returnAll": true
+      },
+      "id": "6bc27b26-e455-4c6e-9cc7-5c7eae8b2ca0",
+      "name": "n8n Table: Get Podcast Jobs",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ],
+      "alwaysOutputData": true,
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "05ca95a2-e68e-4866-ab4b-76f95a0b5c8a",
+      "name": "Merge: Jobs Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        224,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const shortsItems = $('n8n Table: Get Shorts Jobs').all();\nconst podcastItems = $('n8n Table: Get Podcast Jobs').all();\n\nconst VALID_SPEAKERS = new Set(['SAM', 'ALEX', 'JORDAN', 'RILEY']);\n\nfunction normalizeSpeaker(raw) {\n  const up = String(raw || '').trim().toUpperCase();\n  if (VALID_SPEAKERS.has(up)) return up;\n  return null;\n}\n\nfunction normalizeShorts(j) {\n  // Priority 1: turns_json\n  if (j.turns_json) {\n    try {\n      const turns = typeof j.turns_json === 'string'\n        ? JSON.parse(j.turns_json)\n        : j.turns_json;\n\n      if (Array.isArray(turns) && turns.length > 0) {\n        const lines = [];\n        for (const turn of turns) {\n          const speaker = normalizeSpeaker(turn && turn.speaker);\n          const text = String((turn && turn.text) || '').trim();\n          if (speaker && text) {\n            lines.push(speaker + ': ' + text);\n          }\n        }\n        if (lines.length > 0) {\n          const distinctSpeakers = new Set(lines.map(function(l) { return l.split(':')[0]; }));\n          return {\n            script_text: lines.join('\\n'),\n            source_type: 'turns_json',\n            hook_line: String(j.hook_line || ''),\n            title_moment: String(j.title_moment || ''),\n            turn_count: lines.length,\n            shorts_format_version: 'turns_json_v1',\n            shorts_dialogue_json: typeof j.turns_json === 'string' ? j.turns_json : JSON.stringify(j.turns_json),\n            shorts_word_count: lines.join(' ').split(/\\s+/).filter(Boolean).length,\n            shorts_distinct_speakers: distinctSpeakers.size,\n            shorts_reaction_detected: lines.length > 1,\n            shorts_contract_warning: ''\n          };\n        }\n      }\n    } catch (e) {\n      // fall through to narration_script\n    }\n  }\n\n  // Priority 2: narration_script with dialogue[] (shorts_dialogue_v2 compatible)\n  if (j.narration_script) {\n    try {\n      const ns = typeof j.narration_script === 'string'\n        ? JSON.parse(j.narration_script)\n        : j.narration_script;\n\n      const dialogue = Array.isArray(ns && ns.dialogue) ? ns.dialogue : [];\n\n      if (dialogue.length > 0) {\n        const lines = dialogue.map(function(line) {\n          const speaker = String((line && line.speaker) || '').trim();\n          const text = String((line && line.text) || '').trim();\n          return speaker && text ? (speaker + ': ' + text) : '';\n        }).filter(Boolean);\n\n        if (lines.length > 0) {\n          const distinctSpeakers = new Set(lines.map(function(l) { return l.split(':')[0].trim(); }));\n          const turnCount = lines.length;\n          const contractWarning = distinctSpeakers.size < 2\n            ? 'fewer than 2 distinct speakers'\n            : (turnCount < 3 || turnCount > 6 ? 'turn count ' + turnCount + ' outside 3-6 range' : '');\n\n          return {\n            script_text: lines.join('\\n'),\n            source_type: 'narration_script',\n            hook_line: String(j.hook_line || ''),\n            title_moment: String(j.title_moment || ''),\n            turn_count: turnCount,\n            shorts_format_version: (ns && ns.version) || 'shorts_dialogue_v2',\n            shorts_dialogue_json: JSON.stringify(dialogue),\n            shorts_word_count: lines.join(' ').split(/\\s+/).filter(Boolean).length,\n            shorts_distinct_speakers: distinctSpeakers.size,\n            shorts_reaction_detected: lines.length > 1,\n            shorts_contract_warning: contractWarning\n          };\n        }\n      }\n    } catch (e) {\n      // fall through to raw string\n    }\n  }\n\n  // Priority 3: raw narration_script string fallback\n  const raw = String(j.narration_script || '');\n  if (raw.trim()) {\n    return {\n      script_text: raw,\n      source_type: 'raw_string_fallback',\n      hook_line: String(j.hook_line || ''),\n      title_moment: String(j.title_moment || ''),\n      turn_count: 0,\n      shorts_format_version: 'legacy',\n      shorts_dialogue_json: '',\n      shorts_word_count: raw.split(/\\s+/).filter(Boolean).length,\n      shorts_distinct_speakers: 0,\n      shorts_reaction_detected: false,\n      shorts_contract_warning: 'raw string fallback - no structured dialogue detected'\n    };\n  }\n\n  // No usable source\n  return null;\n}\n\nconst pending = [];\n\nfor (const item of shortsItems) {\n  const j = item.json;\n  if (j.script_state === 'READY' && (!j.qa_state || String(j.qa_state).trim() === '')) {\n    const norm = normalizeShorts(j);\n\n    if (!norm) {\n      throw new Error('[Filter QA Pending] Shorts job ' + j.job_id + ' has no usable script source (turns_json, narration_script all empty or malformed).');\n    }\n\n    pending.push({\n      json: {\n        job_id: j.job_id,\n        topic: j.topic,\n        slug: j.slug,\n        niche: j.niche,\n        channel: 'shorts',\n        script_text: norm.script_text,\n        episode_summary: '',\n        turns_json: String(j.turns_json || ''),\n        beats_json: String(j.beats_json || ''),\n        hook_line: norm.hook_line,\n        title_moment: norm.title_moment,\n        source_type: norm.source_type,\n        turn_count: norm.turn_count,\n        shorts_format_version: norm.shorts_format_version,\n        shorts_dialogue_json: norm.shorts_dialogue_json,\n        shorts_word_count: norm.shorts_word_count,\n        shorts_distinct_speakers: norm.shorts_distinct_speakers,\n        shorts_reaction_detected: norm.shorts_reaction_detected,\n        shorts_contract_warning: norm.shorts_contract_warning\n      }\n    });\n  }\n}\n\nfor (const item of podcastItems) {\n  const j = item.json;\n  if (j.script_state === 'READY' && (!j.qa_state || String(j.qa_state).trim() === '')) {\n    let scriptText = '';\n\n    try {\n      const arr = typeof j.script_json === 'string'\n        ? JSON.parse(j.script_json)\n        : j.script_json;\n\n      const sections = {};\n\n      for (const line of arr || []) {\n        const section = String((line && line.section) || '').trim();\n        const speaker = String((line && line.speaker) || '').trim();\n        const text = String((line && line.text) || '').trim();\n\n        if (!section) continue;\n        if (!sections[section]) sections[section] = [];\n        sections[section].push(speaker + ': ' + text);\n      }\n\n      scriptText = Object.entries(sections)\n        .map(function(entry) { return '[' + entry[0] + ']\\n' + entry[1].join('\\n'); })\n        .join('\\n\\n');\n\n      if (!scriptText) {\n        scriptText = String(j.script_json || '');\n      }\n    } catch (e) {\n      scriptText = String(j.script_json || '');\n    }\n\n    pending.push({\n      json: {\n        job_id: j.job_id,\n        topic: j.topic,\n        slug: j.slug,\n        niche: j.niche,\n        channel: 'podcast',\n        script_text: scriptText,\n        episode_summary: j.episode_summary || ''\n      }\n    });\n  }\n}\n\nif (pending.length === 0) {\n  throw new Error('No QA-pending scripts found.');\n}\n\nreturn pending;"
+      },
+      "id": "006777b5-4092-4016-b075-6fe8a025e835",
+      "name": "Code: Filter QA Pending",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst items = $input.all();\nconst output = [];\n\nfunction buildShortsStructuredContext(j) {\n  const parts = [];\n\n  if (j.hook_line) {\n    parts.push('Hook line: ' + j.hook_line);\n  }\n  if (j.title_moment) {\n    parts.push('Title moment: ' + j.title_moment);\n  }\n  if (j.turn_count && j.turn_count > 0) {\n    parts.push('Turn count: ' + j.turn_count + ' (source: ' + (j.source_type || 'unknown') + ')');\n  }\n  const beatsRaw = String(j.beats_json || '').trim();\n  if (beatsRaw && beatsRaw !== '\"\"' && beatsRaw !== 'null' && beatsRaw !== '[]') {\n    parts.push('beats_json present: yes');\n  }\n\n  if (parts.length === 0) return '';\n  return '\\n\\nSHORTS STRUCTURED CONTEXT:\\n' + parts.join('\\n');\n}\n\nfunction substitute(template, vars) {\n  return template.replace(/\\{(\\w+)\\}/g, function(match, key) {\n    return Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : match;\n  });\n}\n\nfor (const item of items) {\n  const j = item.json;\n  const channel = j.channel;\n  const scriptText = j.script_text || '';\n  const episodeSummary = j.episode_summary || '';\n  const shortsContext = channel === 'shorts' ? buildShortsStructuredContext(j) : '';\n\n  const creativeInstructions = channel === 'shorts'\n    ? cfg.qa_creative_instructions_shorts\n    : cfg.qa_creative_instructions_podcast;\n\n  const creativeSchema = channel === 'shorts'\n    ? cfg.qa_creative_schema_shorts\n    : cfg.qa_creative_schema_podcast;\n\n  const placeholdersA = {\n    job_id: j.job_id,\n    channel: channel,\n    script_text: scriptText,\n    episode_summary: episodeSummary,\n    shorts_structured_context: shortsContext,\n    canon_continuity_rules: cfg.canon_continuity_rules || ''\n  };\n\n  const placeholdersB = {\n    job_id: j.job_id,\n    channel: channel,\n    script_text: scriptText,\n    episode_summary: episodeSummary,\n    shorts_structured_context: shortsContext,\n    canon_bias_rules: cfg.canon_bias_rules || '',\n    canon_audience: cfg.canon_audience || '',\n    canon_no_go_topics: cfg.canon_no_go_topics || '',\n    creative_instructions: creativeInstructions,\n    creative_schema: creativeSchema\n  };\n\n  const userPromptA = substitute(cfg.prompt_qa_reviewer_a, placeholdersA);\n  const userPromptB = substitute(cfg.prompt_qa_reviewer_b, placeholdersB);\n\n  const openaiPayload = {\n    model: 'gpt-5.4-mini',\n    temperature: Number(cfg.GPT_Temperature),\n    max_completion_tokens: 1024,\n    messages: [\n      { role: 'system', content: cfg.prompt_canon_header },\n      { role: 'user', content: userPromptA }\n    ]\n  };\n\n  const anthropicPayload = {\n    model: 'claude-sonnet-4-5',\n    max_tokens: 8000,\n    thinking: { type: 'enabled', budget_tokens: 5000 },\n    system: cfg.prompt_canon_header,\n    messages: [{ role: 'user', content: userPromptB }]\n  };\n\n  output.push({\n    json: {\n      job_id: j.job_id,\n      topic: j.topic,\n      slug: j.slug,\n      niche: j.niche,\n      channel: channel,\n      script_text: scriptText,\n      episode_summary: episodeSummary,\n      openai_payload: openaiPayload,\n      anthropic_payload: anthropicPayload\n    }\n  });\n}\n\nreturn output;"
+      },
+      "id": "2c9d18d9-a90a-441d-93ed-893960949cf6",
+      "name": "Code: Build QA Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Code: Build Config').first().json.Anthropic_ApiKey }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.anthropic_payload) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 2500
+            }
+          }
+        }
+      },
+      "id": "f46a44ca-a3be-4c74-a79c-59dbf28ebae6",
+      "name": "HTTP: QA Claude Sonnet (Gates 2+3+4)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        192
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "bbca5307-afd5-45f7-b41c-b2a5d8b1209a",
+      "name": "Merge: Reviewer Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1344,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const openaiItems = $('HTTP: QA OpenAI (Gates 1+5)').all();\nconst claudeItems = $('HTTP: QA Claude Sonnet (Gates 2+3+4)').all();\nconst promptItems = $('Code: Build QA Prompts').all();\n\nconst jobMeta = {};\nfor (const item of promptItems) {\n  jobMeta[item.json.job_id] = {\n    channel: item.json.channel,\n    topic: item.json.topic,\n    slug: item.json.slug\n  };\n}\n\nfunction parseJsonObject(rawText) {\n  if (!rawText) {\n    throw new Error('Empty response text');\n  }\n\n  const cleaned = String(rawText).trim();\n  const match = cleaned.match(/\\{[\\s\\S]*\\}/);\n  if (!match) {\n    throw new Error('No JSON object found in model response');\n  }\n  return JSON.parse(match[0]);\n}\n\nfunction getClaudeText(item) {\n  const contentArr = Array.isArray(item.json.content) ? item.json.content : [];\n  const text = contentArr\n    .filter(function(block) { return block && block.type === 'text'; })\n    .map(function(block) { return String(block.text || ''); })\n    .join('\\n')\n    .trim();\n  if (text) {\n    return text;\n  }\n  return JSON.stringify(item.json || {});\n}\n\nfunction normalizeBinary(value) {\n  const num = Number(value);\n  if (!Number.isFinite(num)) {\n    return 0;\n  }\n  return num >= 1 ? 1 : 0;\n}\n\nfunction normalizeCreativeScore(value) {\n  const num = Number(value);\n  if (!Number.isFinite(num)) {\n    return null;\n  }\n  return Math.max(0, Math.min(10, Math.round(num)));\n}\n\nfunction getCreativeConfig(channel) {\n  if (channel === 'shorts') {\n    return {\n      allFields: ['hook_strength', 'interaction_quality', 'naturalness', 'standalone_clarity', 'engagement_payoff'],\n      thresholdFields: [\n        { key: 'hook_strength', min: 7 },\n        { key: 'interaction_quality', min: 7 },\n        { key: 'standalone_clarity', min: 7 }\n      ]\n    };\n  }\n\n  if (channel === 'podcast') {\n    return {\n      allFields: ['dialogue_naturalness', 'persona_distinctness', 'escalation_quality', 'host_moderation_quality', 'section_flow'],\n      thresholdFields: [\n        { key: 'dialogue_naturalness', min: 7 },\n        { key: 'escalation_quality', min: 7 },\n        { key: 'section_flow', min: 7 }\n      ]\n    };\n  }\n\n  return {\n    allFields: [],\n    thresholdFields: []\n  };\n}\n\nfunction buildClaudeParseFailure(rawText, reason) {\n  return {\n    parse_failed: true,\n    parse_failed_raw: String(rawText || '').slice(0, 300),\n    parse_failed_reason: reason || 'Claude response could not be parsed',\n    gate_non_misleading: null,\n    gate_non_misleading_note: null,\n    gate_bias_free: null,\n    gate_bias_free_note: null,\n    gate_audience_fit: null,\n    gate_audience_fit_note: null,\n    creative_main_reason: null\n  };\n}\n\nconst openaiResults = {};\nfor (let i = 0; i < openaiItems.length; i++) {\n  const item = openaiItems[i];\n  let parsed;\n  try {\n    const raw = item.json && item.json.choices && item.json.choices[0] && item.json.choices[0].message\n      ? item.json.choices[0].message.content\n      : '';\n    parsed = parseJsonObject(raw);\n  } catch (error) {\n    parsed = {\n      gate_accuracy: 0,\n      gate_accuracy_note: 'parse error - review manually',\n      gate_continuity: 0,\n      gate_continuity_note: 'parse error - review manually'\n    };\n  }\n\n  const fallbackJobId = i < promptItems.length ? promptItems[i].json.job_id : null;\n  const jobId = parsed.job_id || fallbackJobId;\n  if (jobId) {\n    openaiResults[jobId] = parsed;\n  }\n}\n\nconst claudeResults = {};\nfor (let i = 0; i < claudeItems.length; i++) {\n  const item = claudeItems[i];\n  const fallbackJobId = i < promptItems.length ? promptItems[i].json.job_id : null;\n  const channel = fallbackJobId && jobMeta[fallbackJobId] ? jobMeta[fallbackJobId].channel : null;\n  const creativeConfig = getCreativeConfig(channel);\n  const rawText = getClaudeText(item);\n\n  let parsed;\n  try {\n    parsed = parseJsonObject(rawText);\n  } catch (error) {\n    parsed = buildClaudeParseFailure(rawText, 'Claude response JSON could not be parsed');\n  }\n\n  if (!parsed.parse_failed) {\n    for (const key of creativeConfig.allFields) {\n      if (normalizeCreativeScore(parsed[key]) === null) {\n        parsed = buildClaudeParseFailure(rawText, 'Creative score block missing or invalid for field ' + key);\n        break;\n      }\n    }\n  }\n\n  const jobId = parsed.job_id || fallbackJobId;\n  if (jobId) {\n    claudeResults[jobId] = parsed;\n  }\n}\n\nfunction buildEditorialFailures(data) {\n  const failures = [];\n  if (data.gate_accuracy !== 1) failures.push('gate_accuracy' + (data.gate_accuracy_note ? ' (' + data.gate_accuracy_note + ')' : ''));\n  if (data.gate_continuity !== 1) failures.push('gate_continuity' + (data.gate_continuity_note ? ' (' + data.gate_continuity_note + ')' : ''));\n  if (data.gate_non_misleading !== 1) failures.push('gate_non_misleading' + (data.gate_non_misleading_note ? ' (' + data.gate_non_misleading_note + ')' : ''));\n  if (data.gate_bias_free !== 1) failures.push('gate_bias_free' + (data.gate_bias_free_note ? ' (' + data.gate_bias_free_note + ')' : ''));\n  if (data.gate_audience_fit !== 1) failures.push('gate_audience_fit' + (data.gate_audience_fit_note ? ' (' + data.gate_audience_fit_note + ')' : ''));\n  return failures;\n}\n\nfunction buildCreativeFailures(channel, creativeScores, creativeAverage) {\n  const config = getCreativeConfig(channel);\n  const failures = [];\n  for (const threshold of config.thresholdFields) {\n    const value = creativeScores[threshold.key];\n    if (value === null || value < threshold.min) {\n      failures.push(threshold.key + ' ' + (value === null ? 'n/a' : value + '/10') + ' < ' + threshold.min);\n    }\n  }\n  if (!(creativeAverage >= 7.5)) {\n    failures.push('creative_average ' + creativeAverage + '/10 < 7.5');\n  }\n  return failures;\n}\n\nfunction defaultCreativeScores() {\n  return {\n    hook_strength: null,\n    interaction_quality: null,\n    naturalness: null,\n    standalone_clarity: null,\n    engagement_payoff: null,\n    dialogue_naturalness: null,\n    persona_distinctness: null,\n    escalation_quality: null,\n    host_moderation_quality: null,\n    section_flow: null\n  };\n}\n\nconst output = [];\nconst allJobIds = Array.from(new Set(Object.keys(openaiResults).concat(Object.keys(claudeResults))));\n\nfor (const jobId of allJobIds) {\n  const meta = jobMeta[jobId] || {};\n  const channel = meta.channel || 'unknown';\n  const creativeConfig = getCreativeConfig(channel);\n\n  const openai = openaiResults[jobId] || {\n    gate_accuracy: 0,\n    gate_accuracy_note: 'no openai result',\n    gate_continuity: 0,\n    gate_continuity_note: 'no openai result'\n  };\n\n  const claude = claudeResults[jobId] || buildClaudeParseFailure('', 'No Claude result');\n  const cParseFailed = !!claude.parse_failed;\n\n  const gate_accuracy = normalizeBinary(openai.gate_accuracy);\n  const gate_continuity = normalizeBinary(openai.gate_continuity);\n  const gate_non_misleading = cParseFailed ? null : normalizeBinary(claude.gate_non_misleading);\n  const gate_bias_free = cParseFailed ? null : normalizeBinary(claude.gate_bias_free);\n  const gate_audience_fit = cParseFailed ? null : normalizeBinary(claude.gate_audience_fit);\n\n  const creativeScores = defaultCreativeScores();\n  if (!cParseFailed) {\n    for (const key of creativeConfig.allFields) {\n      creativeScores[key] = normalizeCreativeScore(claude[key]);\n    }\n  }\n\n  let creativeAverage = null;\n  if (!cParseFailed && creativeConfig.allFields.length) {\n    const sum = creativeConfig.allFields.reduce(function(total, key) {\n      return total + (creativeScores[key] || 0);\n    }, 0);\n    creativeAverage = Number((sum / creativeConfig.allFields.length).toFixed(1));\n  }\n\n  const editorialTotalScore = gate_accuracy + gate_continuity + (gate_non_misleading || 0) + (gate_bias_free || 0) + (gate_audience_fit || 0);\n  const editorialPass = !cParseFailed && editorialTotalScore === 5;\n  const editorialFailures = cParseFailed ? [] : buildEditorialFailures({\n    gate_accuracy: gate_accuracy,\n    gate_accuracy_note: openai.gate_accuracy_note || '',\n    gate_continuity: gate_continuity,\n    gate_continuity_note: openai.gate_continuity_note || '',\n    gate_non_misleading: gate_non_misleading,\n    gate_non_misleading_note: claude.gate_non_misleading_note || '',\n    gate_bias_free: gate_bias_free,\n    gate_bias_free_note: claude.gate_bias_free_note || '',\n    gate_audience_fit: gate_audience_fit,\n    gate_audience_fit_note: claude.gate_audience_fit_note || ''\n  });\n\n  const creativeFailures = cParseFailed ? [] : buildCreativeFailures(channel, creativeScores, creativeAverage);\n  const creativePass = !cParseFailed && creativeFailures.length === 0;\n\n  let qaVerdict = 'QA_FAILED';\n  if (cParseFailed) {\n    qaVerdict = 'QA_PARSE_ERROR';\n  } else if (editorialPass && creativePass) {\n    qaVerdict = 'QA_PASSED';\n  }\n\n  let mainReason;\n  if (cParseFailed) {\n    mainReason = 'creative score block parse failure - ' + (claude.parse_failed_reason || 'manual review required');\n  } else if (editorialFailures.length) {\n    mainReason = editorialFailures[0];\n  } else if (creativeFailures.length) {\n    mainReason = 'creative failure, not a factual failure - ' + (String(claude.creative_main_reason || '').trim() || creativeFailures[0]);\n  } else {\n    mainReason = 'all editorial gates passed and creative thresholds met';\n  }\n\n  const qaNotesParts = [];\n  qaNotesParts.push('Main reason: ' + mainReason);\n  if (cParseFailed) {\n    qaNotesParts.push('Creative parse failure: ' + (claude.parse_failed_reason || 'invalid creative score block'));\n    if (claude.parse_failed_raw) {\n      qaNotesParts.push('Raw response preview: ' + claude.parse_failed_raw);\n    }\n  } else {\n    qaNotesParts.push('Editorial failures: ' + (editorialFailures.length ? editorialFailures.join('; ') : 'none'));\n    qaNotesParts.push('Creative failures: ' + (creativeFailures.length ? creativeFailures.join('; ') : 'none'));\n  }\n\n  output.push({\n    json: {\n      job_id: jobId,\n      channel: channel,\n      topic: meta.topic || '',\n      slug: meta.slug || '',\n      qa_verdict: qaVerdict,\n      qa_state: qaVerdict,\n      qa_score: editorialTotalScore,\n      total_score: editorialTotalScore,\n      editorial_total_score: editorialTotalScore,\n      creative_average: creativeAverage,\n      qa_notes: qaNotesParts.join(' | '),\n      gate_accuracy: gate_accuracy,\n      gate_accuracy_note: openai.gate_accuracy_note || '',\n      gate_continuity: gate_continuity,\n      gate_continuity_note: openai.gate_continuity_note || '',\n      gate_non_misleading: gate_non_misleading,\n      gate_non_misleading_note: cParseFailed ? '' : (claude.gate_non_misleading_note || ''),\n      gate_bias_free: gate_bias_free,\n      gate_bias_free_note: cParseFailed ? '' : (claude.gate_bias_free_note || ''),\n      gate_audience_fit: gate_audience_fit,\n      gate_audience_fit_note: cParseFailed ? '' : (claude.gate_audience_fit_note || ''),\n      hook_strength: creativeScores.hook_strength,\n      interaction_quality: creativeScores.interaction_quality,\n      naturalness: creativeScores.naturalness,\n      standalone_clarity: creativeScores.standalone_clarity,\n      engagement_payoff: creativeScores.engagement_payoff,\n      dialogue_naturalness: creativeScores.dialogue_naturalness,\n      persona_distinctness: creativeScores.persona_distinctness,\n      escalation_quality: creativeScores.escalation_quality,\n      host_moderation_quality: creativeScores.host_moderation_quality,\n      section_flow: creativeScores.section_flow\n    }\n  });\n}\n\nreturn output;"
+      },
+      "id": "1a351171-7b8a-46b9-8e4a-a1ba1f318545",
+      "name": "Code: Merge QA Scores",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-channel-check",
+              "leftValue": "={{ $json.channel }}",
+              "rightValue": "shorts",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f1143231-b5f0-49eb-8d2e-e07bc0ffdb08",
+      "name": "IF: Shorts or Podcast",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "mode": "id",
+          "value": "KAQ2mU82hSbTWl7J"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "qa_state": "={{ $json.qa_verdict }}",
+            "qa_score": "={{ $json.editorial_total_score }}",
+            "editorial_total_score": "={{ $json.editorial_total_score }}",
+            "creative_average": "={{ $json.creative_average }}",
+            "qa_notes": "={{ $json.qa_notes }}",
+            "gate_accuracy": "={{ $json.gate_accuracy }}",
+            "gate_continuity": "={{ $json.gate_continuity }}",
+            "gate_non_misleading": "={{ $json.gate_non_misleading }}",
+            "gate_bias_free": "={{ $json.gate_bias_free }}",
+            "gate_audience_fit": "={{ $json.gate_audience_fit }}",
+            "hook_strength": "={{ $json.hook_strength }}",
+            "interaction_quality": "={{ $json.interaction_quality }}",
+            "naturalness": "={{ $json.naturalness }}",
+            "standalone_clarity": "={{ $json.standalone_clarity }}",
+            "engagement_payoff": "={{ $json.engagement_payoff }}",
+            "qa_approved": "={{ $json.qa_verdict === 'QA_PASSED' }}",
+            "lock_owner": "={{ $json.lock_owner }}",
+            "lock_until": "={{ $json.lock_until }}",
+            "last_error": "={{ $json.last_error }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "hook",
+              "displayName": "hook",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "slug",
+              "displayName": "slug",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "niche",
+              "displayName": "niche",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "angle",
+              "displayName": "angle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "version",
+              "displayName": "version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "lifecycle_state",
+              "displayName": "lifecycle_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "lock_owner",
+              "displayName": "lock_owner",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "script_state",
+              "displayName": "script_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "voice_state",
+              "displayName": "voice_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "scenes_state",
+              "displayName": "scenes_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "metadata_state",
+              "displayName": "metadata_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "thumb_state",
+              "displayName": "thumb_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "images_state",
+              "displayName": "images_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "render_state",
+              "displayName": "render_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "upload_state",
+              "displayName": "upload_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "narration_script",
+              "displayName": "narration_script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "outline_json",
+              "displayName": "outline_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "word_count",
+              "displayName": "word_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "estimated_duration_sec",
+              "displayName": "estimated_duration_sec",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "script_file_id",
+              "displayName": "script_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "audio_file_id",
+              "displayName": "audio_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "scenes_file_id",
+              "displayName": "scenes_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "thumb_file_id",
+              "displayName": "thumb_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "video_file_id",
+              "displayName": "video_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "images_json",
+              "displayName": "images_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "carousel_images_json",
+              "displayName": "carousel_images_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "video_url",
+              "displayName": "video_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "tags_json",
+              "displayName": "tags_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "thumbnail_text",
+              "displayName": "thumbnail_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "seo_keywords_json",
+              "displayName": "seo_keywords_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "chapters_json",
+              "displayName": "chapters_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "hashtags",
+              "displayName": "hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "youtube_video_id",
+              "displayName": "youtube_video_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "youtube_url",
+              "displayName": "youtube_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "uploaded_at",
+              "displayName": "uploaded_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "notes",
+              "displayName": "notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "job_id",
+              "displayName": "job_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "lock_until",
+              "displayName": "lock_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "retry_count",
+              "displayName": "retry_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "imagetovideo_state",
+              "displayName": "imagetovideo_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "video_clips_json",
+              "displayName": "video_clips_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "qa_state",
+              "displayName": "qa_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "qa_score",
+              "displayName": "qa_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "qa_notes",
+              "displayName": "qa_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "qa_approved",
+              "displayName": "qa_approved",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_accuracy",
+              "displayName": "gate_accuracy",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_continuity",
+              "displayName": "gate_continuity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_non_misleading",
+              "displayName": "gate_non_misleading",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_bias_free",
+              "displayName": "gate_bias_free",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_audience_fit",
+              "displayName": "gate_audience_fit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "failed_clips_count",
+              "displayName": "failed_clips_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "editorial_total_score",
+              "displayName": "editorial_total_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "creative_average",
+              "displayName": "creative_average",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "hook_strength",
+              "displayName": "hook_strength",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "interaction_quality",
+              "displayName": "interaction_quality",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "naturalness",
+              "displayName": "naturalness",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "standalone_clarity",
+              "displayName": "standalone_clarity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "engagement_payoff",
+              "displayName": "engagement_payoff",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "rework_attempted",
+              "displayName": "rework_attempted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "rework_timestamp",
+              "displayName": "rework_timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "rework_reason_summary",
+              "displayName": "rework_reason_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "rework_error",
+              "displayName": "rework_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "3b465f9b-e5cb-49f1-95e4-f8c5e4bd92d2",
+      "name": "n8n Table: Update Shorts QA",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2016,
+        0
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      },
+      "notes": "qa_score note: qa_score is mapped from editorial_total_score for compatibility (integer 0–5, one point per editorial gate passed: gate_accuracy, gate_continuity, gate_non_misleading, gate_bias_free, gate_audience_fit). creative_average is stored separately as a float. This workflow does not write a combined blended QA score."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "mode": "id",
+          "value": "FeNCIdXZyeKeaeFc"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "qa_state": "={{ $json.qa_verdict }}",
+            "qa_score": "={{ $json.editorial_total_score }}",
+            "editorial_total_score": "={{ $json.editorial_total_score }}",
+            "creative_average": "={{ $json.creative_average }}",
+            "qa_notes": "={{ $json.qa_notes }}",
+            "gate_accuracy": "={{ $json.gate_accuracy }}",
+            "gate_continuity": "={{ $json.gate_continuity }}",
+            "gate_non_misleading": "={{ $json.gate_non_misleading }}",
+            "gate_bias_free": "={{ $json.gate_bias_free }}",
+            "gate_audience_fit": "={{ $json.gate_audience_fit }}",
+            "persona_distinctness": "={{ $json.persona_distinctness }}",
+            "escalation_quality": "={{ $json.escalation_quality }}",
+            "host_moderation_quality": "={{ $json.host_moderation_quality }}",
+            "section_flow": "={{ $json.section_flow }}",
+            "qa_approved": "={{ $json.qa_verdict === 'QA_PASSED' }}",
+            "lock_owner": "={{ $json.lock_owner }}",
+            "lock_until": "={{ $json.lock_until }}",
+            "last_error": "={{ $json.last_error }}",
+            "dialogue_naturalness": "={{ $json.dialogue_naturalness }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "job_id",
+              "displayName": "job_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "slug",
+              "displayName": "slug",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "niche",
+              "displayName": "niche",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "angle",
+              "displayName": "angle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "episode_summary",
+              "displayName": "episode_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "script_state",
+              "displayName": "script_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "voice_state",
+              "displayName": "voice_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "metadata_state",
+              "displayName": "metadata_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "render_state",
+              "displayName": "render_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "upload_state",
+              "displayName": "upload_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "lock_owner",
+              "displayName": "lock_owner",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lock_until",
+              "displayName": "lock_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "retry_count",
+              "displayName": "retry_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "script_json",
+              "displayName": "script_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "total_word_count",
+              "displayName": "total_word_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "estimated_duration_sec",
+              "displayName": "estimated_duration_sec",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "script_file_id",
+              "displayName": "script_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "tags_json",
+              "displayName": "tags_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "hashtags",
+              "displayName": "hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "chapters_json",
+              "displayName": "chapters_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "video_file_id",
+              "displayName": "video_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "video_url",
+              "displayName": "video_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "youtube_video_id",
+              "displayName": "youtube_video_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "youtube_url",
+              "displayName": "youtube_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "distribution_state",
+              "displayName": "distribution_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "speakers_json",
+              "displayName": "speakers_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "qa_state",
+              "displayName": "qa_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "qa_score",
+              "displayName": "qa_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "qa_notes",
+              "displayName": "qa_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "qa_approved",
+              "displayName": "qa_approved",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_accuracy",
+              "displayName": "gate_accuracy",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_continuity",
+              "displayName": "gate_continuity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_non_misleading",
+              "displayName": "gate_non_misleading",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_bias_free",
+              "displayName": "gate_bias_free",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gate_audience_fit",
+              "displayName": "gate_audience_fit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lifecycle_state",
+              "displayName": "lifecycle_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "thumb_state",
+              "displayName": "thumb_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "images_state",
+              "displayName": "images_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "imagetovideo_state",
+              "displayName": "imagetovideo_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "video_clips_json",
+              "displayName": "video_clips_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "dialogue_json",
+              "displayName": "dialogue_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "editorial_total_score",
+              "displayName": "editorial_total_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "creative_average",
+              "displayName": "creative_average",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "dialogue_naturalness",
+              "displayName": "dialogue_naturalness",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "persona_distinctness",
+              "displayName": "persona_distinctness",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "escalation_quality",
+              "displayName": "escalation_quality",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "host_moderation_quality",
+              "displayName": "host_moderation_quality",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "section_flow",
+              "displayName": "section_flow",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "rework_attempted",
+              "displayName": "rework_attempted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "rework_timestamp",
+              "displayName": "rework_timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "rework_reason_summary",
+              "displayName": "rework_reason_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "rework_error",
+              "displayName": "rework_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "a73b2d60-de52-4ef5-8216-3588387a4e5c",
+      "name": "n8n Table: Update Podcast QA",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2016,
+        192
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      },
+      "notes": "qa_score note: qa_score is mapped from editorial_total_score for compatibility (integer 0–5, one point per editorial gate passed: gate_accuracy, gate_continuity, gate_non_misleading, gate_bias_free, gate_audience_fit). creative_average is stored separately as a float. This workflow does not write a combined blended QA score."
+    },
+    {
+      "parameters": {},
+      "id": "37abe74a-1f6d-4bcc-9533-ab52647dac0b",
+      "name": "Merge: QA Updates",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        2240,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const allScores = $('Code: Merge QA Scores').all();\n\nlet qa_passed = 0;\nlet qa_failed = 0;\nlet qa_parse_error = 0;\nlet hard_veto_count = 0;\nlet creative_failure_only_count = 0;\nconst failed_jobs = [];\n\nfor (const item of allScores) {\n  const j = item.json;\n  if (j.qa_verdict === 'QA_PASSED') {\n    qa_passed++;\n    continue;\n  }\n\n  if (j.qa_verdict === 'QA_PARSE_ERROR') {\n    qa_parse_error++;\n  } else {\n    qa_failed++;\n  }\n\n  if (j.gate_accuracy === 0 || j.gate_bias_free === 0) {\n    hard_veto_count++;\n  }\n\n  if (j.qa_verdict === 'QA_FAILED' && j.editorial_total_score === 5) {\n    creative_failure_only_count++;\n  }\n\n  failed_jobs.push({\n    job_id: j.job_id,\n    channel: j.channel,\n    qa_verdict: j.qa_verdict,\n    qa_notes: j.qa_notes\n  });\n}\n\nreturn [{\n  json: {\n    total_reviewed: allScores.length,\n    qa_passed: qa_passed,\n    qa_failed: qa_failed,\n    qa_parse_error: qa_parse_error,\n    hard_veto_count: hard_veto_count,\n    creative_failure_only_count: creative_failure_only_count,\n    failed_jobs: failed_jobs,\n    reviewers: [\n      'gpt-5.4-mini (gates 1,5)',\n      'claude-sonnet-4-5-thinking (gates 2,3,4 + creative)'\n    ],\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "073c9f3c-1d7a-459e-9226-59202188bb4b",
+      "name": "Code: QA Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $('Code: Build Config').first().json.OpenAI_ApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.openai_payload) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 2500
+            }
+          }
+        }
+      },
+      "id": "fe4b9b10-73f2-49f1-815e-f5ffe7c019c3",
+      "name": "HTTP: QA OpenAI (Gates 1+5)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        0
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger: Manual": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Load Env Vars",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Load Env Vars": {
+      "main": [
+        [
+          {
+            "node": "Code: Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Config": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Get Shorts Jobs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "n8n Table: Get Podcast Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Get Shorts Jobs": {
+      "main": [
+        [
+          {
+            "node": "Merge: Jobs Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Get Podcast Jobs": {
+      "main": [
+        [
+          {
+            "node": "Merge: Jobs Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge: Jobs Data": {
+      "main": [
+        [
+          {
+            "node": "Code: Filter QA Pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Filter QA Pending": {
+      "main": [
+        [
+          {
+            "node": "Code: Build QA Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build QA Prompts": {
+      "main": [
+        [
+          {
+            "node": "HTTP: QA OpenAI (Gates 1+5)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HTTP: QA Claude Sonnet (Gates 2+3+4)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: QA Claude Sonnet (Gates 2+3+4)": {
+      "main": [
+        [
+          {
+            "node": "Merge: Reviewer Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge: Reviewer Results": {
+      "main": [
+        [
+          {
+            "node": "Code: Merge QA Scores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Merge QA Scores": {
+      "main": [
+        [
+          {
+            "node": "IF: Shorts or Podcast",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Shorts or Podcast": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Update Shorts QA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "n8n Table: Update Podcast QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Update Shorts QA": {
+      "main": [
+        [
+          {
+            "node": "Merge: QA Updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Update Podcast QA": {
+      "main": [
+        [
+          {
+            "node": "Merge: QA Updates",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge: QA Updates": {
+      "main": [
+        [
+          {
+            "node": "Code: QA Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: QA OpenAI (Gates 1+5)": {
+      "main": [
+        [
+          {
+            "node": "Merge: Reviewer Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "dae5ad8c-7ee7-4dbe-8ca8-19dec6708936",
+  "meta": {
+    "instanceId": "64a04bbfa553a6ed8ce67fc008973a3dcc3ed6643470422bbe3c9cbd17a4a383"
+  },
+  "id": "779jLrFljDJyL6R9",
+  "tags": [
+    {
+      "updatedAt": "2026-03-03T23:31:19.661Z",
+      "createdAt": "2026-03-03T23:31:19.661Z",
+      "id": "8MUpynKTDX9QuG0S",
+      "name": "youtube-automation"
+    },
+    {
+      "updatedAt": "2026-03-21T22:06:19.974Z",
+      "createdAt": "2026-03-21T22:06:19.974Z",
+      "id": "llIiDJZXcgbPMluo",
+      "name": "script-qa"
+    }
+  ]
+}

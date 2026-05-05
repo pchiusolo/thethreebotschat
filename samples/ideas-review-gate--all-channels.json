@@ -1,0 +1,368 @@
+{
+  "name": "Ideas Review Gate – All Channels",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "14d40a51-6898-4b3c-b891-6f9e2f5bfae7",
+      "name": "Trigger: Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        592,
+        -336
+      ],
+      "notes": "Runs after ideas-to-sheet. Reviews all TOPIC_READY ideas in batch. IMPORTANT: After implementing this gate, update topic-to-script--generational-slang and podcast-topic-to-script--three-gens-talks to filter status = 'REVIEW_APPROVED' instead of 'TOPIC_READY'."
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "gX1ssNBHaM9hL1nk"
+        },
+        "returnAll": true
+      },
+      "id": "9432cb1f-bd69-4d9e-9b67-45f999d93be6",
+      "name": "n8n Table: Load Env Vars",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        816,
+        -336
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = {};\nfor (const item of items) {\n  const name  = (item.json.Name  ?? '').trim();\n  const value = item.json.Value;\n  if (name && value != null && value !== '') {\n    cfg[name] = value;\n  }\n}\nconst required = ['Anthropic_ApiKey', 'prompt_canon_header', 'prompt_ideas_review'];\nfor (const key of required) {\n  if (!cfg[key]) {\n    throw new Error('[Build Config] Missing required key: ' + key + '. Add it to EnvironmentVariables table.');\n  }\n}\nreturn [{ json: cfg }];"
+      },
+      "id": "f5ab4b81-f978-4e61-9bfb-12dd86c3ec44",
+      "name": "Code: Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -336
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Builds flat Name→Value map from EnvironmentVariables rows. Validates Anthropic_ApiKey, prompt_canon_header, and prompt_ideas_review. Canon keys (canon_audience, canon_tone, canon_no_go_topics, canon_bias_rules, canon_uniqueness_rules) are included automatically if written by canon-to-config."
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "UoWIC91xRRT8Q10T"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "keyValue": "TOPIC_READY"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "38a69c0e-6658-4c55-b130-98ef13348cb1",
+      "name": "n8n Table: Get TOPIC_READY Ideas",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1264,
+        -336
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const ready = items.filter(function(i) {\n  return String(i.json.status || '').trim().toUpperCase() === 'TOPIC_READY';\n});\n\nif (ready.length === 0) {\n  throw new Error('No TOPIC_READY ideas found. Run ideas-to-sheet first.');\n}\n\nreturn ready.map(function(i) {\n  return {\n    json: {\n      id:           i.json.id,\n      topic:        String(i.json.topic        || '').trim(),\n      angle:        String(i.json.angle        || '').trim(),\n      niche:        String(i.json.niche        || '').trim(),\n      status:       i.json.status,\n      moment_type:  String(i.json.moment_type  || 'unknown').trim() || 'unknown',\n      tension_type: String(i.json.tension_type || 'unknown').trim() || 'unknown'\n    }\n  };\n});"
+      },
+      "id": "7a531e07-6dd9-443d-a8d1-21f2f22b4783",
+      "name": "Code: Filter TOPIC_READY",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        -336
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Filters all Ideas rows to TOPIC_READY status. Throws if none found."
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Code: Build Config').first().json;\n\nconst systemPrompt = (cfg.prompt_canon_header || '').trim();\nconst promptTemplate = cfg.prompt_ideas_review || '';\n\nconst canonAudience        = cfg.canon_audience         || 'Adults 25-45 interested in generational culture, humor, and nostalgia.';\nconst canonTone            = cfg.canon_tone             || 'Humorous, light, respectful. No political topics. No religion. No race-based humor.';\nconst canonNoGoTopics      = cfg.canon_no_go_topics     || 'Politics, religion, race, gender identity, mental health stigma, violence, sexuality.';\nconst canonBiasRules       = cfg.canon_bias_rules       || 'All three generations must be represented with equal respect and humor.';\nconst canonUniquenessRules = cfg.canon_uniqueness_rules || 'Each topic must target a DIFFERENT specific slang word, phrase, or cultural reference.';\n\nreturn items.map(function(item) {\n  const idea = item.json;\n  const momentType  = String(idea.moment_type  || 'unknown').trim() || 'unknown';\n  const tensionType = String(idea.tension_type || 'unknown').trim() || 'unknown';\n\n  const userPrompt = promptTemplate\n    .replace(/\\{idea_id\\}/g,              String(idea.id           || ''))\n    .replace(/\\{topic\\}/g,               String(idea.topic        || ''))\n    .replace(/\\{angle\\}/g,               String(idea.angle        || ''))\n    .replace(/\\{niche\\}/g,               String(idea.niche        || ''))\n    .replace(/\\{moment_type\\}/g,         momentType)\n    .replace(/\\{tension_type\\}/g,        tensionType)\n    .replace(/\\{canon_audience\\}/g,      canonAudience)\n    .replace(/\\{canon_tone\\}/g,          canonTone)\n    .replace(/\\{canon_no_go_topics\\}/g,  canonNoGoTopics)\n    .replace(/\\{canon_bias_rules\\}/g,    canonBiasRules)\n    .replace(/\\{canon_uniqueness_rules\\}/g, canonUniquenessRules);\n\n  return {\n    json: {\n      idea_id:      idea.id,\n      topic:        idea.topic,\n      angle:        idea.angle,\n      niche:        idea.niche,\n      moment_type:  momentType,\n      tension_type: tensionType,\n      anthropic_payload: {\n        model:      'claude-sonnet-4-5',\n        max_tokens: 1024,\n        system:     systemPrompt,\n        messages:   [{ role: 'user', content: userPrompt }]\n      }\n    }\n  };\n});"
+      },
+      "id": "2cbe1320-0bd9-4029-b513-0f8c6b19a74b",
+      "name": "Code: Build Review Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1712,
+        -336
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Builds one Anthropic API payload per TOPIC_READY idea. system = prompt_canon_header from config. user = prompt_ideas_review from config with placeholder substitution. No hardcoded prompt prose."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Code: Build Config').first().json.Anthropic_ApiKey }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.anthropic_payload) }}",
+        "options": {}
+      },
+      "id": "eff0b3e2-3830-452f-8bee-bf5a0bd56c75",
+      "name": "HTTP: Review via Claude Sonnet",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1936,
+        -336
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const promptItems = $('Code: Build Review Prompts').all();\nconst results = [];\n\nconst growthDimensions = [\n  { key: 'hook_strength',     label: 'hook_strength' },\n  { key: 'contrast_strength', label: 'contrast_strength' },\n  { key: 'relatability',      label: 'relatability' },\n  { key: 'comment_potential', label: 'comment_potential' },\n  { key: 'topic_clarity',     label: 'topic_clarity' }\n];\n\nconst STRONG_MOMENT_TYPES  = ['misunderstanding', 'escalation', 'contradiction'];\nconst STRONG_TENSION_TYPES = ['generational', 'social', 'workplace', 'contradiction'];\n\nfunction toBinaryScore(value) {\n  const num = Number(value);\n  if (!Number.isFinite(num)) { return 0; }\n  return num >= 1 ? 1 : 0;\n}\n\nfunction toGrowthScore(value) {\n  const num = Number(value);\n  if (!Number.isFinite(num)) { return 0; }\n  return Math.max(0, Math.min(10, Math.round(num)));\n}\n\nfunction parseAnthropicJson(httpItem) {\n  const contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\n  const rawText = contentArr\n    .filter(function(block) { return block && block.type === 'text'; })\n    .map(function(block) { return String(block.text || ''); })\n    .join('\\n')\n    .trim() || String(httpItem.output_text || httpItem.completion || '');\n\n  if (!rawText) { throw new Error('Empty text block in Anthropic response'); }\n\n  const cleaned = rawText.trim()\n    .replace(/^```[\\w-]*[\\r\\n]+/, '')\n    .replace(/[\\r\\n]+```$/, '')\n    .trim();\n\n  try {\n    return JSON.parse(cleaned);\n  } catch (error) {\n    const jsonMatch = cleaned.match(/\\{[\\s\\S]*\\}/);\n    if (!jsonMatch) { throw error; }\n    return JSON.parse(jsonMatch[0]);\n  }\n}\n\nfunction getWeakestGrowthDimension(scores) {\n  return growthDimensions.reduce(function(weakest, dimension) {\n    const value = scores[dimension.key];\n    if (!weakest || value < weakest.value) {\n      return { key: dimension.key, label: dimension.label, value: value };\n    }\n    return weakest;\n  }, null);\n}\n\nfunction buildParseFailure(ideaId, topic, errorMessage) {\n  return {\n    idea_id: String(ideaId),\n    topic: String(topic),\n    gate_audience_fit: 0,\n    gate_tone_compliance: 0,\n    gate_uniqueness: 0,\n    gate_bias_safety: 0,\n    gate_factual_safety: 0,\n    editorial_total_score: 0,\n    total_score: 0,\n    growth_fit_average: 0,\n    hook_strength: 0,\n    contrast_strength: 0,\n    relatability: 0,\n    comment_potential: 0,\n    topic_clarity: 0,\n    final_review_state: 'NEEDS_REWORK',\n    verdict: 'NEEDS_REWORK',\n    review_notes: 'Parse error: invalid Claude review response. Defaulted to NEEDS_REWORK and set all growth-fit scores to 0. Weakest growth-fit dimension: hook_strength (0/10).',\n    parse_error: String(errorMessage || 'Unknown parse error')\n  };\n}\n\nfor (var i = 0; i < items.length; i++) {\n  const httpItem   = items[i].json;\n  const promptItem = (promptItems[i] || promptItems[0] || { json: {} }).json;\n  const ideaId     = promptItem.idea_id || '';\n  const topic      = promptItem.topic   || '';\n\n  const momentType  = String(promptItem.moment_type  || 'unknown').trim().toLowerCase();\n  const tensionType = String(promptItem.tension_type || 'unknown').trim().toLowerCase();\n\n  const momentUnknown  = !momentType  || momentType  === 'unknown';\n  const tensionUnknown = !tensionType || tensionType === 'unknown';\n  const momentIsStrong  = STRONG_MOMENT_TYPES.includes(momentType);\n  const tensionIsStrong = STRONG_TENSION_TYPES.includes(tensionType);\n\n  let parsed;\n  try {\n    parsed = parseAnthropicJson(httpItem);\n  } catch (error) {\n    results.push({ json: buildParseFailure(ideaId, topic, error.message) });\n    continue;\n  }\n\n  const gateAudienceFit   = toBinaryScore(parsed.gate_audience_fit);\n  const gateToneCompliance = toBinaryScore(parsed.gate_tone_compliance);\n  const gateUniqueness     = toBinaryScore(parsed.gate_uniqueness);\n  const gateBiasSafety     = toBinaryScore(parsed.gate_bias_safety);\n  const gateFactualSafety  = toBinaryScore(parsed.gate_factual_safety);\n\n  const hookBoost     = (momentIsStrong && tensionIsStrong) ? 1 : 0;\n  const contrastBoost = (momentIsStrong && tensionIsStrong) ? 1 : 0;\n\n  const hookStrength     = Math.min(10, toGrowthScore(parsed.hook_strength)     + hookBoost);\n  const contrastStrength = Math.min(10, toGrowthScore(parsed.contrast_strength) + contrastBoost);\n  const relatability     = toGrowthScore(parsed.relatability);\n  const commentPotential = toGrowthScore(parsed.comment_potential);\n  const topicClarity     = toGrowthScore(parsed.topic_clarity);\n\n  const editorialTotalScore = gateAudienceFit + gateToneCompliance + gateUniqueness + gateBiasSafety + gateFactualSafety;\n  const growthFitAverage    = Number(((hookStrength + contrastStrength + relatability + commentPotential + topicClarity) / 5).toFixed(1));\n\n  const momentTensionPass = !momentUnknown && !tensionUnknown;\n\n  const finalReviewState = momentTensionPass && editorialTotalScore >= 4 && hookStrength >= 7 && contrastStrength >= 7 && growthFitAverage >= 7.5\n    ? 'REVIEW_APPROVED'\n    : 'NEEDS_REWORK';\n\n  const weakestGrowth = getWeakestGrowthDimension({\n    hook_strength: hookStrength, contrast_strength: contrastStrength,\n    relatability: relatability, comment_potential: commentPotential, topic_clarity: topicClarity\n  });\n\n  const rawReason = String(parsed.main_reason || parsed.review_notes || '').replace(/\\s+/g, ' ').trim().replace(/[.]+$/, '');\n\n  let reason = rawReason;\n  if (!reason) {\n    if (momentUnknown) {\n      reason = 'moment_type is unknown — idea lacks interaction mechanics';\n    } else if (tensionUnknown) {\n      reason = 'tension_type is unknown — idea lacks tension signal';\n    } else if (editorialTotalScore < 4) {\n      reason = 'editorial_total_score ' + editorialTotalScore + '/5 is below 4';\n    } else if (hookStrength < 7) {\n      reason = 'hook_strength ' + hookStrength + '/10 is below 7';\n    } else if (contrastStrength < 7) {\n      reason = 'contrast_strength ' + contrastStrength + '/10 is below 7';\n    } else if (growthFitAverage < 7.5) {\n      reason = 'growth_fit_average ' + growthFitAverage + '/10 is below 7.5';\n    } else {\n      reason = 'all editorial and growth-fit thresholds are met';\n    }\n  }\n\n  const momentLabel  = momentIsStrong  ? 'strong (' + momentType  + ')'  : momentUnknown  ? 'missing/unknown' : 'weak (' + momentType  + ')';\n  const tensionLabel = tensionIsStrong ? 'strong (' + tensionType + ')' : tensionUnknown ? 'missing/unknown' : 'weak (' + tensionType + ')';\n  const mechanicsSuffix = ' Moment quality: ' + momentLabel + '. Tension strength: ' + tensionLabel + '.';\n\n  const reviewNotes = finalReviewState === 'REVIEW_APPROVED'\n    ? 'Approved: ' + reason + '.' + mechanicsSuffix\n    : 'Rejected: ' + reason + '. Weakest growth-fit dimension: ' + weakestGrowth.label + ' (' + weakestGrowth.value + '/10).' + mechanicsSuffix;\n\n  results.push({\n    json: {\n      idea_id:               String(parsed.idea_id || ideaId),\n      topic:                 String(parsed.topic   || topic),\n      final_review_state:    finalReviewState,\n      verdict:               finalReviewState,\n      total_score:           editorialTotalScore,\n      editorial_total_score: editorialTotalScore,\n      growth_fit_average:    growthFitAverage,\n      review_notes:          reviewNotes,\n      gate_audience_fit:     gateAudienceFit,\n      gate_tone_compliance:  gateToneCompliance,\n      gate_uniqueness:       gateUniqueness,\n      gate_bias_safety:      gateBiasSafety,\n      gate_factual_safety:   gateFactualSafety,\n      hook_strength:         hookStrength,\n      contrast_strength:     contrastStrength,\n      relatability:          relatability,\n      comment_potential:     commentPotential,\n      topic_clarity:         topicClarity\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "0a294681-ddf2-407e-b2c9-5227612da04e",
+      "name": "Code: Parse Review Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        -336
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Parses each Anthropic response. Matches by item index to retrieve original idea_id from Code: Build Review Prompts. Falls back to NEEDS_REWORK on parse error."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "mode": "id",
+          "value": "UoWIC91xRRT8Q10T"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.idea_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "={{ $json.final_review_state }}",
+            "total_score": "={{ $json.editorial_total_score }}",
+            "review_notes": "={{ $json.review_notes }}",
+            "gate_audience_fit": "={{ $json.gate_audience_fit }}",
+            "gate_tone_compliance": "={{ $json.gate_tone_compliance }}",
+            "gate_uniqueness": "={{ $json.gate_uniqueness }}",
+            "gate_bias_safety": "={{ $json.gate_bias_safety }}",
+            "gate_factual_safety": "={{ $json.gate_factual_safety }}",
+            "editorial_total_score": "={{ $json.editorial_total_score }}",
+            "growth_fit_average": "={{ $json.growth_fit_average }}",
+            "hook_strength": "={{ $json.hook_strength }}",
+            "contrast_strength": "={{ $json.contrast_strength }}",
+            "relatability": "={{ $json.relatability }}",
+            "comment_potential": "={{ $json.comment_potential }}",
+            "topic_clarity": "={{ $json.topic_clarity }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "8dd4bcef-d61d-48b7-b9d3-2b3aa7d7ae64",
+      "name": "n8n Table: Update Idea Review Status",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2384,
+        -336
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function getReviewState(item) {\n  return String(item.json.final_review_state || item.json.verdict || item.json.status || '').trim().toUpperCase();\n}\n\nconst total_reviewed = items.length;\nconst approved = items.filter(function(item) { return getReviewState(item) === 'REVIEW_APPROVED'; }).length;\nconst needs_rework = items.filter(function(item) { return getReviewState(item) === 'NEEDS_REWORK'; }).length;\nconst approval_rate = total_reviewed > 0\n  ? Math.round((approved / total_reviewed) * 100) + '%'\n  : '0%';\n\nreturn [{\n  json: {\n    status: 'REVIEW_COMPLETE',\n    total_reviewed: total_reviewed,\n    approved: approved,\n    needs_rework: needs_rework,\n    approval_rate: approval_rate,\n    review_model: 'claude-sonnet-4-5',\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "773e0b99-98cd-4f6f-b438-cc3e63301204",
+      "name": "Code: Review Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2608,
+        -336
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Aggregates review results across all ideas in the batch."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger: Manual": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Load Env Vars",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Load Env Vars": {
+      "main": [
+        [
+          {
+            "node": "Code: Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Config": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Get TOPIC_READY Ideas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Get TOPIC_READY Ideas": {
+      "main": [
+        [
+          {
+            "node": "Code: Filter TOPIC_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Filter TOPIC_READY": {
+      "main": [
+        [
+          {
+            "node": "Code: Build Review Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Review Prompts": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Review via Claude Sonnet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Review via Claude Sonnet": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse Review Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse Review Results": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Update Idea Review Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Update Idea Review Status": {
+      "main": [
+        [
+          {
+            "node": "Code: Review Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "7f3c1a82-4e5d-4b91-a2d7-9f0e6c8b3d14",
+  "meta": {
+    "instanceId": "64a04bbfa553a6ed8ce67fc008973a3dcc3ed6643470422bbe3c9cbd17a4a383"
+  },
+  "id": "MpLpFYkAfun4iPUA",
+  "tags": [
+    {
+      "updatedAt": "2026-03-03T23:31:19.661Z",
+      "createdAt": "2026-03-03T23:31:19.661Z",
+      "id": "8MUpynKTDX9QuG0S",
+      "name": "youtube-automation"
+    },
+    {
+      "updatedAt": "2026-03-21T21:21:13.944Z",
+      "createdAt": "2026-03-21T21:21:13.944Z",
+      "id": "rOnPAQ9Kv6NzPHE9",
+      "name": "ideas-review"
+    }
+  ]
+}

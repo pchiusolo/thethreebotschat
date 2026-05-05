@@ -1,0 +1,1191 @@
+{
+  "name": "Script to Scenes - Generational Slang",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "ac3505af-2bbc-4a30-a354-928d3649cc8d",
+      "name": "Trigger: Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -2560,
+        0
+      ],
+      "notes": "Pick scenes_state=REQUESTED job, generate scenes+image-concepts in parallel.\n\nPatch summary:\n- Preferred turns_json as primary dialogue source; falls back to narration_script\n- Added optional beats_json as canonical beat context for scene planning\n- Added optional hook_line, title_moment, visual_moment_tags_json to prompt context\n- Tightened config validation to actual prompt/canon/API dependencies\n- Preserved legacy narration fallback and existing output schema"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "KAQ2mU82hSbTWl7J"
+        },
+        "returnAll": true
+      },
+      "id": "c5c55ac1-31f2-4321-965e-3acf34176a6f",
+      "name": "n8n Table: Get All Jobs",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -1888,
+        0
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "retryOnFail": false,
+      "notesInFlow": true,
+      "alwaysOutputData": true,
+      "notes": "No eligible job in the required state"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pick and lock one REQUESTED scenes job from Jobs table.\n// Normalize dialogue-first shorts into a shared conversational manifest for scenes/images.\n\nconst ARTIFACT = 'scenes';\nconst LOCK_MIN = 15;\nconst MAX_RETRIES = 3;\nconst now = new Date();\n\nfunction normalizeSpeaker(input) {\n  const normalized = String(input || '')\n    .trim()\n    .toUpperCase()\n    .replace(/[^A-Z0-9]+/g, '_')\n    .replace(/^_+|_+$/g, '');\n\n  switch (normalized) {\n    case 'SAM':\n    case 'HOST':\n    case 'MODERATOR':\n      return 'SAM';\n    case 'ALEX':\n    case 'GEN_X':\n    case 'GENX':\n    case 'GEN_XER':\n    case 'GENXER':\n      return 'ALEX';\n    case 'JORDAN':\n    case 'MILLENNIAL':\n    case 'MILLENNIALS':\n      return 'JORDAN';\n    case 'RILEY':\n    case 'GEN_Z':\n    case 'GENZ':\n    case 'ZOOMER':\n      return 'RILEY';\n    default:\n      return '';\n  }\n}\n\nfunction cleanText(input) {\n  return String(input || '').replace(/\\s+/g, ' ').trim();\n}\n\nfunction parseNarrationScript(raw) {\n  let parsed;\n  try {\n    parsed = JSON.parse(String(raw || '').trim());\n  } catch (error) {\n    throw new Error('[Pick scenes] narration_script is not valid JSON: ' + error.message);\n  }\n\n  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.prototype.hasOwnProperty.call(parsed, 'format_version')) {\n    if (parsed.format_version !== 'shorts_dialogue_v2') {\n      throw new Error('[Pick scenes] Unsupported narration_script format_version: ' + String(parsed.format_version || ''));\n    }\n    if (!Array.isArray(parsed.dialogue)) {\n      throw new Error('[Pick scenes] shorts_dialogue_v2 narration_script is missing a valid dialogue array.');\n    }\n    return parsed.dialogue;\n  }\n\n  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.dialogue)) {\n    return parsed.dialogue;\n  }\n\n  if (Array.isArray(parsed)) {\n    return parsed;\n  }\n\n  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {\n    if (\n      Object.prototype.hasOwnProperty.call(parsed, 'hook') ||\n      Object.prototype.hasOwnProperty.call(parsed, 'gen_x') ||\n      Object.prototype.hasOwnProperty.call(parsed, 'millennial') ||\n      Object.prototype.hasOwnProperty.call(parsed, 'gen_z') ||\n      Object.prototype.hasOwnProperty.call(parsed, 'closer')\n    ) {\n      return [\n        { speaker: 'SAM', text: parsed.hook },\n        { speaker: 'ALEX', text: parsed.gen_x ?? parsed.genx ?? parsed.alex },\n        { speaker: 'JORDAN', text: parsed.millennial ?? parsed.jordan },\n        { speaker: 'RILEY', text: parsed.gen_z ?? parsed.genz ?? parsed.riley },\n        { speaker: 'SAM', text: parsed.closer }\n      ];\n    }\n  }\n\n  throw new Error('[Pick scenes] narration_script does not match shorts_dialogue_v2 or supported fallback structures.');\n}\n\nfunction normalizeDialogue(rawSegments) {\n  if (!Array.isArray(rawSegments)) {\n    throw new Error('[Pick scenes] Expected narration segments array after parsing.');\n  }\n\n  const normalized = [];\n  for (const rawSegment of rawSegments) {\n    if (rawSegment == null) continue;\n\n    let speaker = '';\n    let text = '';\n\n    if (typeof rawSegment === 'string') {\n      text = cleanText(rawSegment);\n    } else if (typeof rawSegment === 'object' && !Array.isArray(rawSegment)) {\n      speaker = normalizeSpeaker(rawSegment.speaker ?? rawSegment.role ?? rawSegment.character ?? rawSegment.name);\n      text = cleanText(rawSegment.text ?? rawSegment.line ?? rawSegment.dialogue ?? rawSegment.content ?? rawSegment.value);\n    }\n\n    if (!text) continue;\n    if (!speaker) {\n      throw new Error('[Pick scenes] Found dialogue line with unknown or missing speaker: \"' + text.slice(0, 80) + '\"');\n    }\n\n    normalized.push({\n      segment_index: normalized.length,\n      speaker,\n      text\n    });\n  }\n\n  if (!normalized.length) {\n    throw new Error('[Pick scenes] Normalized dialogue is empty after trimming empty lines.');\n  }\n\n  return normalized;\n}\n\nfunction classifyBeat(segment, index, segments) {\n  const text = String(segment.text || '').toLowerCase();\n  if (index === segments.length - 1) return 'payoff';\n  if (segment.speaker === 'SAM') return 'host_transition';\n  if (index > 0 && segments[index - 1].speaker === segment.speaker) return 'same_speaker_continuation';\n  if (/(anyway|meanwhile|different|instead|switching gears|hold on|back up)/.test(text)) return 'topic_shift';\n  return 'reaction_reply';\n}\n\nfunction buildScenePlan(dialogue) {\n  let grouped = [];\n  let current = [0];\n\n  for (let i = 1; i < dialogue.length; i++) {\n    const prev = dialogue[i - 1];\n    const currentSegment = dialogue[i];\n    const isLast = i === dialogue.length - 1;\n    const sameSpeaker = currentSegment.speaker === prev.speaker;\n    const hostTurn = currentSegment.speaker === 'SAM';\n    const topicShift = /(anyway|meanwhile|different|instead|switching gears|hold on|back up)/i.test(currentSegment.text);\n    const shouldStartNewScene = hostTurn || isLast || topicShift || (!sameSpeaker && current.length >= 2);\n\n    if (shouldStartNewScene) {\n      grouped.push(current);\n      current = [i];\n    } else {\n      current.push(i);\n    }\n  }\n  grouped.push(current);\n\n  while (grouped.length < 3) {\n    const splitIndex = grouped.findIndex(function(group) { return group.length > 1; });\n    if (splitIndex === -1) break;\n    const source = grouped[splitIndex];\n    grouped.splice(splitIndex, 1, [source[0]], source.slice(1));\n  }\n\n  while (grouped.length > 6) {\n    const source = grouped.pop();\n    grouped[grouped.length - 1] = grouped[grouped.length - 1].concat(source);\n  }\n\n  return grouped.map(function(group, sceneIndex) {\n    const firstSegment = dialogue[group[0]];\n    const lastSegment = dialogue[group[group.length - 1]];\n    const beatType = sceneIndex === grouped.length - 1\n      ? 'payoff'\n      : (firstSegment.speaker === 'SAM'\n        ? 'host_transition'\n        : (group.length > 1 && firstSegment.speaker === lastSegment.speaker\n          ? 'same_speaker_continuation'\n          : classifyBeat(lastSegment, group[group.length - 1], dialogue)));\n\n    const chapterLabel = beatType === 'host_transition'\n      ? (sceneIndex === 0 ? 'Setup' : 'Reframe')\n      : beatType === 'payoff'\n        ? 'Payoff'\n        : beatType === 'topic_shift'\n          ? 'Shift'\n          : beatType === 'same_speaker_continuation'\n            ? 'Build'\n            : 'Reaction';\n\n    return {\n      index: sceneIndex,\n      related_segment_indexes: group,\n      beat_type: beatType,\n      chapter_label: chapterLabel,\n      position: beatType === 'host_transition' || beatType === 'payoff' ? 'center' : 'bottom',\n      bg_index: beatType === 'host_transition' ? 0 : (sceneIndex % 4),\n      visual_change_required: beatType === 'host_transition' || beatType === 'topic_shift' || beatType === 'payoff' || group.length > 1,\n      speaker_focus: group.map(function(segIdx) { return dialogue[segIdx].speaker; }).filter(function(v, i, a) { return a.indexOf(v) === i; }),\n      reaction_intensity: beatType === 'reaction_reply' || beatType === 'payoff' ? 'high' : beatType === 'host_transition' ? 'low' : 'medium',\n      visual_priority: beatType === 'host_transition' ? 'text' : beatType === 'reaction_reply' || beatType === 'payoff' ? 'speaker' : 'split'\n    };\n  });\n}\n\nconst candidates = items.filter(function(item) {\n  const j = item.json;\n  if (j[ARTIFACT + '_state'] !== 'REQUESTED') return false;\n  if (j.qa_approved !== true) return false;\n  if (j.lifecycle_state !== 'ACTIVE') return false;\n  const lu = j.lock_until ? new Date(j.lock_until) : null;\n  if (lu && lu > now) return false;\n  if (parseInt(j.retry_count || '0', 10) >= MAX_RETRIES) return false;\n  return true;\n});\n\nif (candidates.length === 0) {\n  throw new Error('[Pick ' + ARTIFACT + '] No unlocked REQUESTED jobs under retry limit.');\n}\n\nconst row = candidates[0].json;\n\n// Priority 1: turns_json as primary dialogue source\nlet normalizedDialogue = null;\nlet dialogueSource = '';\nconst rawTurnsJson = String(row.turns_json || '').trim();\nif (rawTurnsJson) {\n  try {\n    const parsedTurns = JSON.parse(rawTurnsJson);\n    if (Array.isArray(parsedTurns) && parsedTurns.length > 0) {\n      normalizedDialogue = normalizeDialogue(parsedTurns);\n      dialogueSource = 'turns_json';\n    }\n  } catch (turnsErr) {\n    // turns_json malformed - fall through to narration_script\n  }\n}\n\n// Priority 2: narration_script legacy fallback\nif (!normalizedDialogue) {\n  const narrationScriptRaw = String(row.narration_script || '').trim();\n  if (!narrationScriptRaw) {\n    throw new Error(\n      '[Pick scenes] No valid dialogue source for job_id: ' + row.job_id + '.\\n' +\n      'turns_json was absent or invalid and narration_script is empty.\\n' +\n      'Re-run the \"Topic to Script\" workflow for this topic.'\n    );\n  }\n  normalizedDialogue = normalizeDialogue(parseNarrationScript(narrationScriptRaw));\n  dialogueSource = 'narration_script';\n}\n\n// Beat context: prefer beats_json over derived scene plan\nlet scenePlan = null;\nconst rawBeatsJson = String(row.beats_json || '').trim();\nif (rawBeatsJson) {\n  try {\n    const parsedBeats = JSON.parse(rawBeatsJson);\n    if (Array.isArray(parsedBeats) && parsedBeats.length >= 3 && parsedBeats.length <= 6) {\n      scenePlan = parsedBeats.map(function(beat, i) {\n        const rawIdx = beat.beat_index != null ? beat.beat_index : (beat.index != null ? beat.index : i);\n        const idx = Number(rawIdx);\n        return {\n          index: Number.isInteger(idx) ? idx : i,\n          related_segment_indexes: Array.isArray(beat.related_segment_indexes) ? beat.related_segment_indexes : [i],\n          beat_type: String(beat.beat_type || 'reaction_reply'),\n          chapter_label: String(beat.chapter_label || ''),\n          position: String(beat.position || ((beat.beat_type === 'host_transition' || beat.beat_type === 'payoff') ? 'center' : 'bottom')),\n          bg_index: Number.isInteger(Number(beat.bg_index)) ? Number(beat.bg_index) : (i % 4),\n          visual_change_required: beat.visual_change_required != null ? Boolean(beat.visual_change_required) : true,\n          speaker_focus: Array.isArray(beat.speaker_focus) ? beat.speaker_focus : [],\n          reaction_intensity: String(beat.reaction_intensity || 'medium'),\n          visual_priority: String(beat.visual_priority || 'split')\n        };\n      });\n    }\n  } catch (beatsErr) {\n    // beats_json malformed - fall through to derived scene plan\n  }\n}\n\nif (!scenePlan) {\n  scenePlan = buildScenePlan(normalizedDialogue);\n}\n\nif (scenePlan.length < 3 || scenePlan.length > 6) {\n  throw new Error('[Pick scenes] Derived scene plan must contain 3 to 6 scenes, got ' + scenePlan.length + '.');\n}\n\n// Optional packaging cues (read-only, never throw on missing or malformed)\nconst hookLine = String(row.hook_line || '').trim();\nconst titleMoment = String(row.title_moment || '').trim();\nlet visualMomentTagsSummary = '';\nconst rawVisualMomentTags = String(row.visual_moment_tags_json || '').trim();\nif (rawVisualMomentTags) {\n  try {\n    const parsedTags = JSON.parse(rawVisualMomentTags);\n    if (Array.isArray(parsedTags) && parsedTags.length > 0) {\n      visualMomentTagsSummary = parsedTags.slice(0, 5).join(', ');\n    } else if (parsedTags && typeof parsedTags === 'object') {\n      visualMomentTagsSummary = Object.values(parsedTags)\n        .reduce(function(a, v) { return a.concat(Array.isArray(v) ? v : [v]); }, [])\n        .slice(0, 5).join(', ');\n    }\n  } catch (tagsErr) {\n    // ignore silently\n  }\n}\n\nconst narrationScript = String(row.narration_script || '').trim();\nconst wordCount = normalizedDialogue.reduce(function(total, segment) {\n  return total + segment.text.split(/\\s+/).filter(Boolean).length;\n}, 0);\n\nconst sheetDur = Number(row.estimated_duration_sec) || 0;\nconst estimatedDurationSec = sheetDur > 0\n  ? sheetDur\n  : Math.max(8, Math.round(wordCount / 2.6));\nconst durationSource = sheetDur > 0 ? 'sheet' : 'dialogue_word_count';\n\nconst topic = String(row.topic || '').trim();\nconst fallbackSlug = topic\n  .toLowerCase()\n  .replace(/[^a-z0-9]+/g, '-')\n  .replace(/^-+|-+$/g, '')\n  .slice(0, 60) || 'topic';\nconst slug = String(row.slug || fallbackSlug).trim() || fallbackSlug;\n\nconst lockUntil = new Date(now.getTime() + LOCK_MIN * 60000).toISOString();\nconst lockOwner = ($execution && $execution.id) ? $execution.id : ('n8n-' + Date.now());\n\nreturn [{\n  json: {\n    job_id: String(row.job_id || '').trim(),\n    topic: topic,\n    angle: String(row.angle || '').trim(),\n    niche: String(row.niche || 'generational_slang').trim(),\n    slug: slug,\n    topic_slug: slug,\n    narration_script: narrationScript,\n    chapters_json: String(row.chapters_json || '[]').trim(),\n    normalized_dialogue_json: JSON.stringify(normalizedDialogue),\n    scene_plan_json: JSON.stringify(scenePlan),\n    word_count: wordCount,\n    segment_count: normalizedDialogue.length,\n    estimated_duration_sec: estimatedDurationSec,\n    duration_source: durationSource,\n    dialogue_source: dialogueSource,\n    hook_line: hookLine,\n    title_moment: titleMoment,\n    visual_moment_tags_summary: visualMomentTagsSummary,\n    scenes_filename: slug + '_scenes.json',\n    images_filename: slug + '_images.json',\n    _lock_until: lockUntil,\n    _lock_owner: lockOwner,\n    _retry_count: parseInt(row.retry_count || '0', 10)\n  }\n}];"
+      },
+      "id": "e76538b4-dcbf-4b78-b3a4-1ac4d0a674dd",
+      "name": "Code: Pick & Lock Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1664,
+        0
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Prefers turns_json as primary dialogue source (falls back to narration_script). Uses beats_json as canonical beat context when available (falls back to derived scene plan). Passes hook_line, title_moment, and visual_moment_tags_summary downstream for prompt enrichment."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "mode": "id",
+          "value": "KAQ2mU82hSbTWl7J"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "scenes_state": "PROCESSING",
+            "lock_owner": "={{ $json._lock_owner }}",
+            "lock_until": "={{ $json._lock_until }}",
+            "last_error": "={{ $json.last_error }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "cf84c2e4-b91f-4ae5-b1b2-433de88f486d",
+      "name": "n8n Table: Set Scenes PROCESSING",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -1440,
+        0
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the OpenAI request payload for beat-aware scenes JSON generation.\n// system = prompt_canon_header; user = prompt_shorts_scenes with placeholder substitution.\n\nconst config = $('Code: Build Config').first().json;\nconst jobConfig = $('Code: Pick & Lock Job').first().json;\n\nlet normalizedDialogue;\nlet scenePlan;\ntry {\n  normalizedDialogue = JSON.parse(String(jobConfig.normalized_dialogue_json || '[]'));\n  scenePlan = JSON.parse(String(jobConfig.scene_plan_json || '[]'));\n} catch (error) {\n  throw new Error('[Build Scenes Prompt] Failed to parse normalized dialogue or scene plan: ' + error.message);\n}\n\nif (!Array.isArray(normalizedDialogue) || !normalizedDialogue.length) {\n  throw new Error('[Build Scenes Prompt] normalized_dialogue_json is empty or invalid.');\n}\nif (!Array.isArray(scenePlan) || scenePlan.length < 3 || scenePlan.length > 6) {\n  throw new Error('[Build Scenes Prompt] scene_plan_json must contain 3 to 6 planned scenes.');\n}\n\nlet packagingSection = '';\nif (jobConfig.hook_line) {\n  packagingSection += 'OPENING HOOK: ' + jobConfig.hook_line + '\\n';\n}\nif (jobConfig.title_moment) {\n  packagingSection += 'KEY MOMENT/REVEAL: ' + jobConfig.title_moment + '\\n';\n}\nif (jobConfig.visual_moment_tags_summary) {\n  packagingSection += 'VISUAL MOMENT TAGS: ' + jobConfig.visual_moment_tags_summary + '\\n';\n}\nif (packagingSection) {\n  packagingSection = '\\nPACKAGING CUES (optional context for visual framing):\\n' + packagingSection;\n}\n\nconst dialogueContext = normalizedDialogue.map(function(segment) {\n  return '[' + segment.segment_index + '] ' + segment.speaker + ': ' + segment.text;\n}).join('\\n');\n\nconst systemContent = config.prompt_canon_header;\nlet userTemplate = config.prompt_shorts_scenes;\n\nconst placeholders = {\n  '{normalized_dialogue}': dialogueContext,\n  '{scene_plan}': JSON.stringify(scenePlan, null, 2),\n  '{estimated_duration_sec}': String(jobConfig.estimated_duration_sec || ''),\n  '{word_count}': String(jobConfig.word_count || ''),\n  '{packaging_cues}': packagingSection,\n  '{scene_count}': String(scenePlan.length),\n  '{hook_line}': jobConfig.hook_line || '',\n  '{title_moment}': jobConfig.title_moment || '',\n  '{visual_moment_tags_summary}': jobConfig.visual_moment_tags_summary || '',\n  '{topic}': jobConfig.topic || '',\n  '{angle}': jobConfig.angle || '',\n  '{niche}': jobConfig.niche || ''\n};\n\nlet userContent = userTemplate;\nfor (const [key, value] of Object.entries(placeholders)) {\n  userContent = userContent.split(key).join(value);\n}\n\nreturn [{\n  json: {\n    topic: jobConfig.topic,\n    angle: jobConfig.angle,\n    niche: jobConfig.niche,\n    topic_slug: jobConfig.topic_slug,\n    scenes_filename: jobConfig.scenes_filename,\n    normalized_dialogue_json: jobConfig.normalized_dialogue_json,\n    scene_plan_json: jobConfig.scene_plan_json,\n    estimated_duration_sec: jobConfig.estimated_duration_sec,\n    word_count: jobConfig.word_count,\n    openai_payload: {\n      model: 'gpt-5.4-mini',\n      temperature: Number(config.GPT_Temperature),\n      max_completion_tokens: 1600,\n      messages: [\n        { role: 'system', content: systemContent },\n        { role: 'user', content: userContent }\n      ]\n    }\n  }\n}];"
+      },
+      "id": "d167f4ea-2f05-4518-9815-0b17709fb3fc",
+      "name": "Code: Build Scenes Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1216,
+        -96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the OpenAI request payload for beat-aware image concept generation.\n// system = prompt_canon_header; user = prompt_shorts_images with placeholder substitution.\n\nconst config = $('Code: Build Config').first().json;\nconst jobConfig = $('Code: Pick & Lock Job').first().json;\n\nlet normalizedDialogue;\nlet scenePlan;\ntry {\n  normalizedDialogue = JSON.parse(String(jobConfig.normalized_dialogue_json || '[]'));\n  scenePlan = JSON.parse(String(jobConfig.scene_plan_json || '[]'));\n} catch (error) {\n  throw new Error('[Build Images Prompt] Failed to parse normalized dialogue or scene plan: ' + error.message);\n}\n\nif (!Array.isArray(normalizedDialogue) || !normalizedDialogue.length) {\n  throw new Error('[Build Images Prompt] normalized_dialogue_json is empty or invalid.');\n}\nif (!Array.isArray(scenePlan) || !scenePlan.length) {\n  throw new Error('[Build Images Prompt] scene_plan_json is empty or invalid.');\n}\n\nconst dialogueContext = normalizedDialogue.map(function(segment) {\n  return '[' + segment.segment_index + '] ' + segment.speaker + ': ' + segment.text;\n}).join('\\n');\n\nconst plannedScenes = scenePlan.map(function(scene) {\n  const relatedLines = scene.related_segment_indexes.map(function(index) {\n    const segment = normalizedDialogue[index];\n    return '[' + index + '] ' + segment.speaker + ': ' + segment.text;\n  }).join(' | ');\n  return {\n    index: scene.index,\n    beat_type: scene.beat_type,\n    chapter_label: scene.chapter_label,\n    related_segment_indexes: scene.related_segment_indexes,\n    dialogue_excerpt: relatedLines,\n    position: scene.position,\n    bg_index: scene.bg_index,\n    visual_change_required: scene.visual_change_required\n  };\n});\n\nconst exampleItem = JSON.stringify({\n  index: 0,\n  related_scene_index: 0,\n  chapter_label: 'Setup',\n  prompt: 'Split-screen host introducing a slang debate, expressive silhouettes, warm interior light, retro-meets-modern living room, medium 9:16 framing, high-contrast playful colors, faceless stylized characters',\n  style_notes: 'Bold readable composition, shorts-friendly contrast, clean negative space for captions.',\n  overlay_text: 'Wait, you say that?'\n}, null, 2);\n\nconst systemContent = config.prompt_canon_header;\nlet userTemplate = config.prompt_shorts_images;\n\nconst placeholders = {\n  '{normalized_dialogue}': dialogueContext,\n  '{planned_scenes}': JSON.stringify(plannedScenes, null, 2),\n  '{scene_count}': String(scenePlan.length),\n  '{example_item}': exampleItem,\n  '{topic}': jobConfig.topic || '',\n  '{angle}': jobConfig.angle || '',\n  '{niche}': jobConfig.niche || ''\n};\n\nlet userContent = userTemplate;\nfor (const [key, value] of Object.entries(placeholders)) {\n  userContent = userContent.split(key).join(value);\n}\n\nreturn [{\n  json: {\n    topic: jobConfig.topic,\n    angle: jobConfig.angle,\n    niche: jobConfig.niche,\n    topic_slug: jobConfig.topic_slug,\n    images_filename: jobConfig.images_filename || ((jobConfig.topic_slug || 'video') + '_images.json'),\n    normalized_dialogue_json: jobConfig.normalized_dialogue_json,\n    scene_plan_json: jobConfig.scene_plan_json,\n    openai_payload: {\n      model: 'gpt-5.4-mini',\n      temperature: Number(config.GPT_Temperature),\n      max_completion_tokens: 1800,\n      messages: [\n        { role: 'system', content: systemContent },\n        { role: 'user', content: userContent }\n      ]\n    }\n  }\n}];"
+      },
+      "id": "f1f78db3-03d0-45fd-a363-c62b5d32f81f",
+      "name": "Code: Build Images Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1216,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Uses normalized dialogue plus the shared beat-based scene plan so image concepts stay aligned with conversational shorts pacing."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $('Code: Build Config').first().json.OpenAI_ApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.openai_payload) }}",
+        "options": {}
+      },
+      "id": "c2e4c3fa-00c8-4641-b00e-388274f1eeda",
+      "name": "HTTP: Generate Scenes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -992,
+        -96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $('Code: Build Config').first().json.OpenAI_ApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.openai_payload) }}",
+        "options": {}
+      },
+      "id": "9798204e-8740-49b6-8cf7-8d6fdc4dac2c",
+      "name": "HTTP: Generate Images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -992,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse and validate beat-aware scenes generated from the dialogue-first scene plan.\nconst openAiItem = items[0].json;\nconst pickData = $('Code: Pick & Lock Job').first().json;\n\nif (!pickData.topic_slug) throw new Error('Missing topic_slug from Pick & Lock Job');\n\nlet normalizedDialogue;\nlet scenePlan;\ntry {\n  normalizedDialogue = JSON.parse(String(pickData.normalized_dialogue_json || '[]'));\n  scenePlan = JSON.parse(String(pickData.scene_plan_json || '[]'));\n} catch (error) {\n  throw new Error('[Parse Scenes] Failed to parse normalized dialogue or scene plan: ' + error.message);\n}\n\nif (!Array.isArray(normalizedDialogue) || !normalizedDialogue.length) {\n  throw new Error('[Parse Scenes] normalized_dialogue_json is empty or invalid.');\n}\nif (!Array.isArray(scenePlan) || scenePlan.length < 3 || scenePlan.length > 6) {\n  throw new Error('[Parse Scenes] scene_plan_json must contain 3 to 6 scenes.');\n}\n\nconst raw = (\n  openAiItem?.choices?.[0]?.message?.content\n  ?? openAiItem?.message?.content\n  ?? openAiItem?.text\n  ?? ''\n).trim();\nif (!raw) throw new Error('[Parse Scenes] Empty OpenAI scenes response');\n\nlet parsed;\ntry {\n  const cleaned = raw.replace(/^```[\\w]*[\\r\\n]+/, '').replace(/[\\r\\n]+```$/, '').trim();\n  const obj = JSON.parse(cleaned);\n  parsed = Array.isArray(obj) ? obj : (Array.isArray(obj?.scenes) ? obj.scenes : null);\n} catch (err) {\n  throw new Error('[Parse Scenes] Scenes JSON parse error: ' + err.message + '\\n\\nRaw (first 600): ' + raw.slice(0, 600));\n}\n\nif (!Array.isArray(parsed)) {\n  throw new Error('[Parse Scenes] Expected a JSON array of scenes.');\n}\nif (parsed.length !== scenePlan.length || parsed.length < 3 || parsed.length > 6) {\n  throw new Error('[Parse Scenes] Expected ' + scenePlan.length + ' scenes from the shared beat plan, got ' + parsed.length + '.');\n}\n\nconst allowedBeatTypes = new Set(['host_transition', 'reaction_reply', 'same_speaker_continuation', 'payoff', 'topic_shift']);\nconst validSegmentIndexes = new Set(normalizedDialogue.map(function(segment) { return Number(segment.segment_index); }));\n\nconst normalized = parsed.map(function(scene, i) {\n  if (!scene || Array.isArray(scene) || typeof scene !== 'object') {\n    throw new Error('[Parse Scenes] Scene ' + i + ' must be an object.');\n  }\n\n  const plan = scenePlan[i];\n  const index = Number(scene.index);\n  if (!Number.isInteger(index) || index !== i) {\n    throw new Error('[Parse Scenes] Scene ' + i + ' must have sequential index ' + i + '.');\n  }\n\n  if (!Array.isArray(scene.related_segment_indexes) || !scene.related_segment_indexes.length) {\n    throw new Error('[Parse Scenes] Scene ' + i + ' must include a non-empty related_segment_indexes array.');\n  }\n\n  const relatedSegmentIndexes = scene.related_segment_indexes.map(function(value) {\n    const numberValue = Number(value);\n    if (!Number.isInteger(numberValue) || !validSegmentIndexes.has(numberValue)) {\n      throw new Error('[Parse Scenes] Scene ' + i + ' references invalid related_segment_index ' + value + '.');\n    }\n    return numberValue;\n  });\n\n  if (JSON.stringify(relatedSegmentIndexes) !== JSON.stringify(plan.related_segment_indexes)) {\n    throw new Error('[Parse Scenes] Scene ' + i + ' related_segment_indexes must match the shared beat plan.');\n  }\n\n  if (typeof scene.text !== 'string' || !scene.text.trim()) {\n    throw new Error('[Parse Scenes] Scene ' + i + ' is missing non-empty text.');\n  }\n\n  const beatType = String(scene.beat_type || plan.beat_type || '').trim();\n  if (!allowedBeatTypes.has(beatType)) {\n    throw new Error('[Parse Scenes] Scene ' + i + ' has invalid beat_type: ' + beatType);\n  }\n\n  const position = String(scene.position || plan.position || '').trim() || 'bottom';\n  const bgIndex = Number(scene.bg_index);\n  if (!Number.isInteger(bgIndex)) {\n    throw new Error('[Parse Scenes] Scene ' + i + ' has invalid bg_index.');\n  }\n\n  const allowedIntensities = new Set(['high', 'medium', 'low']);\n  const allowedVisualPriorities = new Set(['speaker', 'text', 'split']);\n\n  const rawSpeakerFocus = Array.isArray(scene.speaker_focus) ? scene.speaker_focus : (Array.isArray(plan.speaker_focus) ? plan.speaker_focus : []);\n  const speakerFocus = rawSpeakerFocus.map(function(s) { return String(s || '').trim().toUpperCase(); }).filter(Boolean);\n\n  const rawIntensity = String(scene.reaction_intensity || '').trim();\n  const reactionIntensity = allowedIntensities.has(rawIntensity)\n    ? rawIntensity\n    : (allowedIntensities.has(String(plan.reaction_intensity || '').trim()) ? String(plan.reaction_intensity).trim() : 'medium');\n\n  const rawVisualPriority = String(scene.visual_priority || '').trim();\n  const visualPriority = allowedVisualPriorities.has(rawVisualPriority)\n    ? rawVisualPriority\n    : (allowedVisualPriorities.has(String(plan.visual_priority || '').trim()) ? String(plan.visual_priority).trim() : 'split');\n\n  return {\n    index,\n    related_segment_indexes: relatedSegmentIndexes,\n    beat_type: beatType,\n    chapter_label: String(scene.chapter_label || plan.chapter_label || '').trim() || plan.chapter_label,\n    text: scene.text.trim(),\n    position,\n    bg_index: bgIndex,\n    visual_change_required: typeof scene.visual_change_required === 'boolean'\n      ? scene.visual_change_required\n      : Boolean(plan.visual_change_required),\n    speaker_focus: speakerFocus,\n    reaction_intensity: reactionIntensity,\n    visual_priority: visualPriority\n  };\n});\n\nconst content = JSON.stringify(normalized, null, 2);\nconst buffer = Buffer.from(content, 'utf8');\n\nreturn [{\n  json: {\n    job_id: pickData.job_id,\n    topic_slug: pickData.topic_slug,\n    scenes_filename: pickData.scenes_filename,\n    scenes_json: JSON.stringify(normalized),\n    normalized_dialogue_json: pickData.normalized_dialogue_json,\n    scene_plan_json: pickData.scene_plan_json,\n    scenes_state: 'READY',\n    images_state: 'REQUESTED',\n    lock_owner: '',\n    lock_until: '',\n    last_error: ''\n  },\n  binary: {\n    data: {\n      data: buffer.toString('base64'),\n      mimeType: 'application/json',\n      fileName: pickData.scenes_filename,\n      fileExtension: 'json'\n    }\n  }\n}];"
+      },
+      "id": "5d47c4ff-b959-4a39-bd2c-f1f5c72df95f",
+      "name": "Code: Parse Scenes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -768,
+        -96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the OpenAI response for image concepts and validate them against the shared beat-based scene plan.\n// Also creates binary file content for Google Drive upload.\n\nconst openAiItem = items[0].json;\nconst pickData = $('Code: Pick & Lock Job').first().json;\n\nlet scenePlan;\ntry {\n  scenePlan = JSON.parse(String(pickData.scene_plan_json || '[]'));\n} catch (error) {\n  throw new Error('[Parse Images JSON] Failed to parse scene_plan_json: ' + error.message);\n}\n\nif (!Array.isArray(scenePlan) || !scenePlan.length) {\n  throw new Error('[Parse Images JSON] scene_plan_json is empty or invalid.');\n}\n\nconst validSceneIndexes = new Set(scenePlan.map(function(scene) { return Number(scene.index); }));\nconst sceneByIndex = Object.fromEntries(scenePlan.map(function(scene) { return [Number(scene.index), scene]; }));\n\nconst raw = (\n  openAiItem?.choices?.[0]?.message?.content\n  ?? openAiItem?.message?.content\n  ?? openAiItem?.text\n  ?? ''\n).trim();\n\nif (!raw) {\n  throw new Error(\n    '[Parse Images JSON] OpenAI returned empty content.\\n' +\n    'Check: (1) OpenAI API credential is valid, ' +\n    '(2) your account has quota, ' +\n    '(3) the HTTP Request node returned a 200 status.'\n  );\n}\n\nlet parsed;\ntry {\n  const cleaned = raw\n    .replace(/^```[\\w]*[\\r\\n]+/, '')\n    .replace(/[\\r\\n]+```$/, '')\n    .trim();\n  const obj = JSON.parse(cleaned);\n  if (!Array.isArray(obj) && Array.isArray(obj?.images)) {\n    parsed = obj.images;\n  } else if (Array.isArray(obj)) {\n    parsed = obj;\n  } else {\n    throw new Error('Expected { \"images\": [...] } or a bare array, got: ' + typeof obj);\n  }\n} catch (err) {\n  throw new Error(\n    '[Parse Images JSON] Could not parse LLM output as JSON.\\n' +\n    'Parse error: ' + err.message + '\\n\\n' +\n    'Raw response (first 600 chars):\\n' + raw.slice(0, 600)\n  );\n}\n\nif (!Array.isArray(parsed) || parsed.length !== scenePlan.length) {\n  throw new Error('[Parse Images JSON] Expected exactly ' + scenePlan.length + ' image concepts, got ' + (Array.isArray(parsed) ? parsed.length : typeof parsed));\n}\n\nconst normalized = parsed.map(function(img, i) {\n  if (!img || Array.isArray(img) || typeof img !== 'object') {\n    throw new Error('[Parse Images JSON] Image[' + i + '] must be an object.');\n  }\n\n  const index = Number(img.index);\n  if (!Number.isInteger(index) || index !== i) {\n    throw new Error('[Parse Images JSON] Image[' + i + '] must have sequential index ' + i + '.');\n  }\n\n  const relatedSceneIndex = Number(img.related_scene_index);\n  if (!Number.isInteger(relatedSceneIndex) || !validSceneIndexes.has(relatedSceneIndex)) {\n    throw new Error('[Parse Images JSON] Image[' + i + '] has invalid related_scene_index: ' + img.related_scene_index);\n  }\n\n  if (typeof img.prompt !== 'string' || img.prompt.trim() === '') {\n    throw new Error('[Parse Images JSON] Image[' + i + '] missing or invalid \"prompt\"');\n  }\n  if (typeof img.style_notes !== 'string' || img.style_notes.trim() === '') {\n    throw new Error('[Parse Images JSON] Image[' + i + '] missing or invalid \"style_notes\"');\n  }\n  if (typeof img.overlay_text !== 'string') {\n    throw new Error('[Parse Images JSON] Image[' + i + '] missing or invalid \"overlay_text\"');\n  }\n\n  const scene = sceneByIndex[relatedSceneIndex];\n  return {\n    index,\n    related_scene_index: relatedSceneIndex,\n    chapter_label: String(img.chapter_label || scene.chapter_label || '').trim() || scene.chapter_label,\n    order_in_chapter: 1,\n    suggested_time_range: { start: 0, end: 0 },\n    prompt: img.prompt.trim(),\n    style_notes: img.style_notes.trim(),\n    overlay_text: img.overlay_text.trim()\n  };\n});\n\nconst topic = pickData.topic || 'unknown';\nconst slug = pickData.topic_slug || topic.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 60);\nconst filename = pickData.images_filename || (slug + '_images.json');\n\nconst content = JSON.stringify({ images: normalized }, null, 2);\nconst buffer = Buffer.from(content, 'utf8');\n\nreturn [{\n  json: {\n    topic: topic,\n    topic_slug: slug,\n    images_json: JSON.stringify({ images: normalized }),\n    images_filename: filename,\n    image_count: normalized.length,\n    images_created_at: new Date().toISOString()\n  },\n  binary: {\n    data: {\n      data: buffer.toString('base64'),\n      mimeType: 'application/json',\n      fileName: filename,\n      fileExtension: 'json'\n    }\n  }\n}];"
+      },
+      "id": "b78e307a-b211-435f-a4d5-f37ea2907194",
+      "name": "Code: Parse Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -768,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "name": "={{ $('Code: Parse Scenes').first().json.scenes_filename }}",
+        "driveId": {
+          "__rl": true,
+          "value": "MyDrive",
+          "mode": "list",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $('Code: Build Config').first().json.Scenes }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "a8322c4a-43e0-48ed-920b-cb92f44a4f51",
+      "name": "Drive: Upload scenes.json",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -544,
+        -96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "OnOgEn0moBspnG8O",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "={{ $('Code: Parse Images').first().json.images_filename }}",
+        "driveId": {
+          "__rl": true,
+          "value": "MyDrive",
+          "mode": "list",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $('Code: Build Config').first().json.Images }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "4ad1b979-bc78-4b1e-b73e-e7f3c3c16518",
+      "name": "Drive: Upload images.json",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -544,
+        96
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "OnOgEn0moBspnG8O",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "8d8bb1aa-16e3-42de-972e-e2380e2b6b22",
+      "name": "Merge Branches",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -320,
+        0
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Waits for both Drive uploads before Code: Merge Results runs."
+    },
+    {
+      "parameters": {
+        "jsCode": "const scenesData = $('Code: Parse Scenes').first().json;\nconst imagesData = $('Code: Parse Images').first().json;\nconst scenesDrive = $('Drive: Upload scenes.json').first().json;\nconst job = $('Code: Pick & Lock Job').first().json;\n\nlet beatsJson = '[]';\ntry {\n  const scenes = JSON.parse(scenesData.scenes_json || '[]');\n  const beats = scenes.map(function(s) {\n    return {\n      beat_index: s.index,\n      beat_type: s.beat_type,\n      speaker_focus: Array.isArray(s.speaker_focus) ? s.speaker_focus : [],\n      reaction_intensity: s.reaction_intensity || 'medium',\n      visual_priority: s.visual_priority || 'split',\n      chapter_label: s.chapter_label || '',\n      related_segment_indexes: Array.isArray(s.related_segment_indexes) ? s.related_segment_indexes : []\n    };\n  });\n  beatsJson = JSON.stringify(beats);\n} catch (e) { beatsJson = '[]'; }\n\nreturn [{ json: {\n  job_id: job.job_id,\n  scenes_state: 'READY',\n  images_state: 'REQUESTED',\n  scenes_file_id: scenesDrive.id || '',\n  scenes_json: scenesData.scenes_json || '[]',\n  images_json: imagesData.images_json || '{\"images\":[]}',\n  beats_json: beatsJson,\n  lock_owner: '',\n  lock_until: '',\n  last_error: ''\n} }];"
+      },
+      "id": "5f60837e-c89b-49f4-af96-d05f8e06e2a7",
+      "name": "Code: Merge Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -96,
+        0
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "mode": "id",
+          "value": "KAQ2mU82hSbTWl7J"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "scenes_state": "READY",
+            "images_state": "REQUESTED",
+            "scenes_file_id": "={{ $json.scenes_file_id }}",
+            "images_json": "={{ $json.images_json }}",
+            "beats_json": "={{ $json.beats_json }}",
+            "lock_owner": "={{ $json.lock_owner }}",
+            "lock_until": "={{ $json.lock_until }}",
+            "last_error": "={{ $json.last_error }}",
+            "scenes_json": "={{ $json.scenes_json }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "hook",
+              "displayName": "hook",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "slug",
+              "displayName": "slug",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "niche",
+              "displayName": "niche",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "angle",
+              "displayName": "angle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "version",
+              "displayName": "version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "lifecycle_state",
+              "displayName": "lifecycle_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "lock_owner",
+              "displayName": "lock_owner",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "script_state",
+              "displayName": "script_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "voice_state",
+              "displayName": "voice_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "scenes_state",
+              "displayName": "scenes_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "metadata_state",
+              "displayName": "metadata_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "thumb_state",
+              "displayName": "thumb_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "images_state",
+              "displayName": "images_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "render_state",
+              "displayName": "render_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "upload_state",
+              "displayName": "upload_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "narration_script",
+              "displayName": "narration_script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "outline_json",
+              "displayName": "outline_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "word_count",
+              "displayName": "word_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "estimated_duration_sec",
+              "displayName": "estimated_duration_sec",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "script_file_id",
+              "displayName": "script_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "audio_file_id",
+              "displayName": "audio_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "scenes_file_id",
+              "displayName": "scenes_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "thumb_file_id",
+              "displayName": "thumb_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "video_file_id",
+              "displayName": "video_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "images_json",
+              "displayName": "images_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "carousel_images_json",
+              "displayName": "carousel_images_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "video_url",
+              "displayName": "video_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "tags_json",
+              "displayName": "tags_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "thumbnail_text",
+              "displayName": "thumbnail_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "seo_keywords_json",
+              "displayName": "seo_keywords_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "chapters_json",
+              "displayName": "chapters_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "hashtags",
+              "displayName": "hashtags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "youtube_video_id",
+              "displayName": "youtube_video_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "youtube_url",
+              "displayName": "youtube_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "uploaded_at",
+              "displayName": "uploaded_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "notes",
+              "displayName": "notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "job_id",
+              "displayName": "job_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "lock_until",
+              "displayName": "lock_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "retry_count",
+              "displayName": "retry_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "imagetovideo_state",
+              "displayName": "imagetovideo_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "video_clips_json",
+              "displayName": "video_clips_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "qa_state",
+              "displayName": "qa_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "qa_score",
+              "displayName": "qa_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "qa_notes",
+              "displayName": "qa_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "qa_approved",
+              "displayName": "qa_approved",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gate_accuracy",
+              "displayName": "gate_accuracy",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gate_continuity",
+              "displayName": "gate_continuity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gate_non_misleading",
+              "displayName": "gate_non_misleading",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gate_bias_free",
+              "displayName": "gate_bias_free",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gate_audience_fit",
+              "displayName": "gate_audience_fit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "failed_clips_count",
+              "displayName": "failed_clips_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "beats_json",
+              "displayName": "beats_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "234d1150-101f-4c7f-aaac-12e0a04ffa5d",
+      "name": "n8n Table: Set Scenes READY",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        128,
+        0
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Stores beat-aware scenes_json, keeps images_json, and unlocks the job for downstream dialogue-first rendering."
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "gX1ssNBHaM9hL1nk"
+        },
+        "returnAll": true
+      },
+      "id": "64e1785e-64b6-45c7-9862-08fef0da3701",
+      "name": "n8n Table: Load Env Vars",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -2336,
+        0
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Loads all rows from EnvironmentVariables table."
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = {};\nfor (const item of items) {\n  const name  = (item.json.Name  ?? '').trim();\n  const value = item.json.Value;\n  if (name && value != null && value !== '') {\n    cfg[name] = value;\n  }\n}\nconst required = ['OpenAI_ApiKey', 'prompt_canon_header', 'prompt_shorts_scenes', 'prompt_shorts_images', 'Scenes', 'Images', 'GPT_Temperature'];\nfor (const key of required) {\n  if (!cfg[key]) {\n    throw new Error('[Build Config] Missing required key: ' + key + '. Add it to EnvironmentVariables table.');\n  }\n}\nreturn [{ json: cfg }];"
+      },
+      "id": "16e2d5a2-1acf-4306-a519-69285fe69e1b",
+      "name": "Code: Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2112,
+        0
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
+      "notes": "Builds flat Name→Value map from EnvironmentVariables rows.\nAccess values as: $('Code: Build Config').first().json.KeyName"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger: Manual": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Load Env Vars",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Load Env Vars": {
+      "main": [
+        [
+          {
+            "node": "Code: Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Config": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Get All Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Get All Jobs": {
+      "main": [
+        [
+          {
+            "node": "Code: Pick & Lock Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Pick & Lock Job": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Set Scenes PROCESSING",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Table: Set Scenes PROCESSING": {
+      "main": [
+        [
+          {
+            "node": "Code: Build Scenes Prompt",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code: Build Images Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Scenes Prompt": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Generate Scenes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Images Prompt": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Generate Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Generate Scenes": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse Scenes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Generate Images": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse Scenes": {
+      "main": [
+        [
+          {
+            "node": "Drive: Upload scenes.json",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse Images": {
+      "main": [
+        [
+          {
+            "node": "Drive: Upload images.json",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive: Upload scenes.json": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive: Upload images.json": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Branches": {
+      "main": [
+        [
+          {
+            "node": "Code: Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Merge Results": {
+      "main": [
+        [
+          {
+            "node": "n8n Table: Set Scenes READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "0c4ff64c-b4ae-403e-85de-a149769498db",
+  "meta": {
+    "instanceId": "64a04bbfa553a6ed8ce67fc008973a3dcc3ed6643470422bbe3c9cbd17a4a383"
+  },
+  "id": "jYDa1keWaPOQUtGU",
+  "tags": [
+    {
+      "updatedAt": "2026-03-03T23:31:19.661Z",
+      "createdAt": "2026-03-03T23:31:19.661Z",
+      "id": "8MUpynKTDX9QuG0S",
+      "name": "youtube-automation"
+    },
+    {
+      "updatedAt": "2026-03-04T11:54:55.553Z",
+      "createdAt": "2026-03-04T11:54:55.553Z",
+      "id": "WZECHey22ykKZxa2",
+      "name": "script-to-scenes"
+    },
+    {
+      "updatedAt": "2026-03-03T23:31:19.699Z",
+      "createdAt": "2026-03-03T23:31:19.699Z",
+      "id": "d6gg5tzJ4ynGUwh4",
+      "name": "generational-slang"
+    }
+  ]
+}
