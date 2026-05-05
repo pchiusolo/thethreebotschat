@@ -1,0 +1,97 @@
+project:
+  name: Management Intelligence Layer
+  objective: >
+    Capture meeting data, extract structured intelligence,
+    validate outputs, and enable project-level querying.
+
+scope:
+  in_scope:
+    - meeting transcription
+    - ai summarisation
+    - human validation
+    - project-level aggregation
+    - teams bot querying
+  out_of_scope:
+    - employee productivity tracking
+    - automatic jira ticket creation
+    - real-time surveillance
+
+pain_points:
+  - id: PP1
+    description: Loss of information after meetings
+  - id: PP2
+    description: Fragmented project visibility
+  - id: PP3
+    description: Inefficient executive oversight
+  - id: PP4
+    description: Unclear ownership of actions
+  - id: PP5
+    description: Hidden blockers not escalated
+
+use_cases:
+  - id: UC1
+    name: Mandatory Transcription
+    solves: [PP1]
+    inputs:
+      - teams meeting
+    outputs:
+      - transcript
+      - metadata
+    constraints:
+      - only selected meeting types
+      - excludes HR/legal calls
+
+  - id: UC2
+    name: AI Summary
+    solves: [PP1, PP2]
+    outputs:
+      - summary
+      - decisions
+      - actions
+      - blockers
+      - risks
+      - questions
+    constraint:
+      - output is non-authoritative
+
+  - id: UC3
+    name: Human Validation
+    solves: [PP1, PP4]
+    rules:
+      - meeting owner validates
+      - only validated data persists
+
+  - id: UC4
+    name: Project Status Page
+    solves: [PP2, PP3]
+    structure:
+      - overview
+      - actions
+      - decisions
+      - blockers
+      - risks
+
+  - id: UC5
+    name: Teams Bot Query
+    solves: [PP3, PP5]
+    rules:
+      - only validated data
+      - must provide source links
+
+data_flow:
+  - teams_meeting → transcript
+  - transcript → ai_processing
+  - ai_output → validation
+  - validated_output → sharepoint
+  - sharepoint → bot_query
+
+constraints_global:
+  - no micromanagement metrics
+  - no raw transcript exposure to bot
+  - human validation mandatory
+
+success_metrics:
+  - transcription_adoption: ">85%"
+  - summary_accuracy: ">70%"
+  - meeting_reduction: "-30%"
+  - query_time: "<30s"
