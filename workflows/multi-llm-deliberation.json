@@ -3,9 +3,9 @@
   "nodes": [
     {
       "parameters": {
+        "path": "61f9fdf2-1215-49cd-9555-336e88fe7600",
         "formTitle": "Multi-LLM Deliberation",
         "formDescription": "Submit a draft prompt for Author–Critic–Moderator deliberation.",
-        "responseMode": "lastNode",
         "formFields": {
           "values": [
             {
@@ -15,60 +15,79 @@
             },
             {
               "fieldLabel": "extra_context",
-              "fieldType": "textarea",
-              "requiredField": false
+              "fieldType": "textarea"
             }
           ]
         },
+        "responseMode": "lastNode",
         "options": {}
       },
-      "id": "3d8b4e2a-f1c5-4a89-b2d7-c6e8f9a0b3d1",
+      "id": "66ad5040-1227-48b4-b888-1d4552d7cf03",
       "name": "Trigger: Form",
       "type": "n8n-nodes-base.formTrigger",
       "typeVersion": 2.1,
-      "position": [0, 0],
-      "webhookId": "multi-llm-deliberation-form-v1",
+      "position": [
+        -8400,
+        -192
+      ],
+      "webhookId": "61f9fdf2-1215-49cd-9555-336e88fe7600",
       "notes": "Entry point. draft_prompt is required; extra_context is optional. responseMode=lastNode returns Code: Final Output as the form response."
     },
     {
       "parameters": {
         "operation": "get",
         "dataTableId": {
-          "mode": "id",
-          "value": "REPLACE_WITH_ENV_TABLE_ID"
+          "__rl": true,
+          "value": "CZiNCYsWbKCf3nga",
+          "mode": "id"
         },
         "returnAll": true
       },
-      "id": "7c2f1e4b-a3d6-4b78-9e1c-2d5f8a7b0e4c",
+      "id": "b04668f5-48ed-4049-82df-b0936c0f747b",
       "name": "n8n Table: Load Env Vars",
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1,
-      "position": [400, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -8176,
+        -192
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Loads all rows from the shared EnvironmentVariables table. Replace REPLACE_WITH_ENV_TABLE_ID with the actual table UUID post-import."
     },
     {
       "parameters": {
         "jsCode": "const items = $input.all();\nconst cfg = {};\nfor (const item of items) {\n  const name = (item.json.Name ?? '').trim();\n  const value = item.json.Value;\n  if (name && value != null && value !== '') {\n    cfg[name] = value;\n  }\n}\nconst requiredKeys = [\n  'Anthropic_ApiKey', 'OpenAI_ApiKey', 'Gemini_ApiKey',\n  'Author_Model', 'Critic_Model', 'Moderator_Model',\n  'Author_Thinking_Budget', 'Critic_Reasoning_Effort',\n  'prompt_moderator_refiner', 'prompt_author', 'prompt_critic', 'prompt_moderator_validator',\n  'Pass_Threshold', 'Max_Critique_Passes',\n  'LogFolderId'\n];\nfor (const key of requiredKeys) {\n  if (!cfg[key]) {\n    throw new Error('[Build Config] Missing required key: ' + key + '. Add it to EnvironmentVariables table.');\n  }\n}\nreturn [{ json: cfg }];"
       },
-      "id": "c3d4e5f6-a1b2-4c3d-ae4f-5a6b7c8d9e0f",
+      "id": "b6e46849-931b-4c6d-a88f-c0c9b0f83308",
       "name": "Code: Build Config",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [800, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -7952,
+        -192
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Builds flat Name→Value map from EnvironmentVariables rows. Validates all 15 required keys. Access values as: $('Code: Build Config').first().json.KeyName"
     },
     {
       "parameters": {
         "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst triggerData = $('Trigger: Form').first().json;\n\nconst draftPrompt = String(triggerData.draft_prompt || '').trim();\nconst extraContext = String(triggerData.extra_context || '').trim();\n\nif (!draftPrompt) {\n  throw new Error('[Build Refiner Payload] draft_prompt is required but was empty.');\n}\n\nconst userText = extraContext\n  ? 'Draft prompt:\\n' + draftPrompt + '\\n\\nExtra context:\\n' + extraContext\n  : 'Draft prompt:\\n' + draftPrompt;\n\nreturn [{\n  json: {\n    draft_prompt: draftPrompt,\n    extra_context: extraContext,\n    gemini_payload: {\n      system_instruction: { parts: [{ text: cfg.prompt_moderator_refiner }] },\n      contents: [{ role: 'user', parts: [{ text: userText }] }],\n      generationConfig: {\n        responseMimeType: 'application/json',\n        temperature: 0.2\n      }\n    }\n  }\n}];"
       },
-      "id": "d4e5f6a1-b2c3-4d4e-bf5a-6b7c8d9e0f1a",
+      "id": "2ad1cf9a-f457-4898-8661-65df762fea2b",
       "name": "Code: Build Refiner Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1200, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -7728,
+        -192
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Assembles Gemini request for prompt_moderator_refiner. Reads trigger data directly from Trigger: Form; config from Build Config."
     },
     {
@@ -78,7 +97,10 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "content-type", "value": "application/json" }
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -87,36 +109,51 @@
         "body": "={{ JSON.stringify($json.gemini_payload) }}",
         "options": {}
       },
-      "id": "e5f6a1b2-c3d4-4e5f-c06b-7c8d9e0f1a2b",
+      "id": "1c7f0eea-4dbb-494a-be98-39cf198e4a15",
       "name": "HTTP: Moderate Refine",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1600, 0],
-      "settings": { "onError": "continueRegularOutput" },
+      "position": [
+        -7504,
+        -192
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      },
       "notes": "Calls Gemini to convert draft_prompt into a RACE-structured refined_prompt and scoring rubric. temperature=0.2 enforced in payload."
     },
     {
       "parameters": {
         "jsCode": "function extractGeminiText(httpItem) {\n  const parts = (httpItem && httpItem.candidates && httpItem.candidates[0] &&\n    httpItem.candidates[0].content && httpItem.candidates[0].content.parts) || [];\n  return parts.map(function(p) { return String(p.text || ''); }).join('\\n');\n}\n\nfunction parseJsonObject(rawText) {\n  if (!rawText) { throw new Error('Empty response text'); }\n  const cleaned = String(rawText).trim()\n    .replace(/^```[\\w-]*[\\r\\n]+/, '')\n    .replace(/[\\r\\n]+```$/, '')\n    .trim();\n  try {\n    return JSON.parse(cleaned);\n  } catch (err) {\n    const match = cleaned.match(/\\{[\\s\\S]*\\}/);\n    if (!match) { throw err; }\n    return JSON.parse(match[0]);\n  }\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Refiner Payload').first().json;\n\nlet parsed;\ntry {\n  parsed = parseJsonObject(extractGeminiText(httpItem));\n} catch (err) {\n  throw new Error('[Parse Refined Prompt] Failed to parse Gemini refiner response: ' + err.message);\n}\n\nif (!parsed.refined_prompt) {\n  throw new Error('[Parse Refined Prompt] Missing refined_prompt in Gemini response.');\n}\nif (!Array.isArray(parsed.rubric) || parsed.rubric.length === 0) {\n  throw new Error('[Parse Refined Prompt] Missing or empty rubric in Gemini response.');\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: String(parsed.refined_prompt),\n    rubric: parsed.rubric,\n    retry_count: 0,\n    latest_author_output: null,\n    iterations: []\n  }\n}];"
       },
-      "id": "f6a1b2c3-d4e5-4f6a-d17c-8d9e0f1a2b3c",
+      "id": "fef5b2bb-c12d-47dc-b4c0-8526b1ce60bf",
       "name": "Code: Parse Refined Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2000, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -7280,
+        -192
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Extracts refined_prompt and rubric from Gemini. Initialises pipeline state: retry_count=0, latest_author_output=null, iterations=[]."
     },
     {
       "parameters": {
         "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst thinkingBudget = Number(cfg.Author_Thinking_Budget);\nconst maxTokens = thinkingBudget + 4096;\n\nconst userText = state.extra_context\n  ? 'Prompt:\\n' + state.refined_prompt + '\\n\\nExtra context:\\n' + state.extra_context\n  : 'Prompt:\\n' + state.refined_prompt;\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    iterations: state.iterations,\n    anthropic_payload: {\n      model: cfg.Author_Model,\n      max_tokens: maxTokens,\n      thinking: { type: 'enabled', budget_tokens: thinkingBudget },\n      system: cfg.prompt_author,\n      messages: [{ role: 'user', content: userText }]\n    }\n  }\n}];"
       },
-      "id": "a7b8c9d0-e1f2-4a7b-e28d-9e0f1a2b3c4d",
+      "id": "aa235ea7-d800-401a-be0e-9b9c4145d58c",
       "name": "Code: Build Author v1 Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2400, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -7056,
+        -192
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Assembles Anthropic request for the initial Author draft. max_tokens = Author_Thinking_Budget + 4096 per spec; extended thinking enabled."
     },
     {
@@ -126,9 +163,18 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "x-api-key", "value": "={{ $('Code: Build Config').first().json.Anthropic_ApiKey }}" },
-            { "name": "anthropic-version", "value": "2023-06-01" },
-            { "name": "content-type", "value": "application/json" }
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Code: Build Config').first().json.Anthropic_ApiKey }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -137,50 +183,72 @@
         "body": "={{ JSON.stringify($json.anthropic_payload) }}",
         "options": {}
       },
-      "id": "b8c9d0e1-f2a3-4b8c-f39e-0f1a2b3c4d5e",
+      "id": "9cdb6f73-c486-44df-80d0-c1ff6f516219",
       "name": "HTTP: Author v1",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2800, 0],
-      "settings": { "onError": "continueRegularOutput" },
+      "position": [
+        -6832,
+        -192
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      },
       "notes": "Calls Claude Opus (Author_Model) with extended thinking for the initial draft. x-api-key header required; anthropic-version required."
     },
     {
       "parameters": {
         "jsCode": "function extractAnthropicText(httpItem) {\n  const contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\n  const text = contentArr\n    .filter(function(block) { return block && block.type === 'text'; })\n    .map(function(block) { return String(block.text || ''); })\n    .join('\\n')\n    .trim();\n  return text || String(httpItem.output_text || httpItem.completion || '');\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Author v1 Payload').first().json;\n\nconst contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\nconst thinkingBlocks = contentArr.filter(function(block) { return block && block.type === 'thinking'; });\nconst authorText = extractAnthropicText(httpItem);\n\nif (!authorText) {\n  throw new Error('[Parse Author v1] Empty text response from Author v1.');\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: authorText,\n    author_thinking_current: thinkingBlocks,\n    iterations: buildData.iterations\n  }\n}];"
       },
-      "id": "c9d0e1f2-a3b4-4c9d-a49f-1a2b3c4d5e6f",
+      "id": "2ff79563-543e-453d-9f7e-b4c66cd574a6",
       "name": "Code: Parse Author v1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3200, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -6608,
+        -192
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Extracts concatenated text blocks into latest_author_output. Thinking blocks stored in author_thinking_current for trace only; they never enter downstream model calls."
     },
     {
       "parameters": {
         "mode": "combine",
         "combineBy": "combineByPosition",
-        "options": {}
+        "options": {
+          "includeUnpaired": true
+        }
       },
-      "id": "d0e1f2a3-b4c5-4d0e-a51a-2b3c4d5e6f7a",
+      "id": "b346f888-7a74-4a27-8942-e64c67f520a1",
       "name": "Merge: Critic Inputs",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
-      "position": [3600, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -6384,
+        -192
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Loop entry point. Input 0: Code: Parse Author v1 (first pass). Input 1: Code: Increment Retry (subsequent passes). N8N loop detection fires this node when either input is active."
     },
     {
       "parameters": {
         "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst userText = 'Refined prompt:\\n' + state.refined_prompt +\n  '\\n\\nAuthor output:\\n' + state.latest_author_output;\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    author_thinking_current: state.author_thinking_current || [],\n    iterations: state.iterations || [],\n    openai_payload: {\n      model: cfg.Critic_Model,\n      reasoning_effort: cfg.Critic_Reasoning_Effort,\n      response_format: { type: 'json_object' },\n      messages: [\n        { role: 'system', content: cfg.prompt_critic },\n        { role: 'user', content: userText }\n      ]\n    }\n  }\n}];"
       },
-      "id": "e1f2a3b4-c5d6-4e1f-a62b-3c4d5e6f7a8b",
+      "id": "54cebc09-548c-4746-b987-3b548b125c47",
       "name": "Code: Build Critic Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [4000, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -6160,
+        -256
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Assembles OpenAI request for Critic_Model. author_thinking_current is carried in state but never inserted into the user message, keeping thinking blocks out of downstream calls."
     },
     {
@@ -190,7 +258,10 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Authorization", "value": "={{ 'Bearer ' + $('Code: Build Config').first().json.OpenAI_ApiKey }}" }
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $('Code: Build Config').first().json.OpenAI_ApiKey }}"
+            }
           ]
         },
         "sendBody": true,
@@ -199,36 +270,51 @@
         "body": "={{ JSON.stringify($json.openai_payload) }}",
         "options": {}
       },
-      "id": "f2a3b4c5-d6e7-4f2a-a73c-4d5e6f7a8b9c",
+      "id": "cf3ae189-e47b-42fb-ab66-a77c7f955a19",
       "name": "HTTP: Critic",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [4400, 0],
-      "settings": { "onError": "continueRegularOutput" },
+      "position": [
+        -5936,
+        -256
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      },
       "notes": "Calls Critic_Model (ChatGPT) with reasoning_effort and json_object response_format. Returns structured critique JSON."
     },
     {
       "parameters": {
         "jsCode": "function extractOpenAIText(httpItem) {\n  return String((httpItem && httpItem.choices && httpItem.choices[0] &&\n    httpItem.choices[0].message && httpItem.choices[0].message.content) || '');\n}\n\nfunction parseJsonObject(rawText) {\n  if (!rawText) { throw new Error('Empty response text'); }\n  const cleaned = String(rawText).trim()\n    .replace(/^```[\\w-]*[\\r\\n]+/, '')\n    .replace(/[\\r\\n]+```$/, '')\n    .trim();\n  try {\n    return JSON.parse(cleaned);\n  } catch (err) {\n    const match = cleaned.match(/\\{[\\s\\S]*\\}/);\n    if (!match) { throw err; }\n    return JSON.parse(match[0]);\n  }\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Critic Payload').first().json;\n\nlet criticJson;\ntry {\n  criticJson = parseJsonObject(extractOpenAIText(httpItem));\n} catch (err) {\n  throw new Error('[Parse Critic Response] Failed to parse Critic response: ' + err.message);\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: buildData.latest_author_output,\n    author_thinking_current: buildData.author_thinking_current,\n    iterations: buildData.iterations,\n    critic_json: criticJson\n  }\n}];"
       },
-      "id": "a3b4c5d6-e7f8-4a3b-a84d-5e6f7a8b9c0d",
+      "id": "120264aa-e044-4f43-8586-b37138307a85",
       "name": "Code: Parse Critic Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [4800, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -5712,
+        -256
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Parses Critic JSON (strengths, weaknesses, suggested_revisions). Full state carried forward via Build Critic Payload reference."
     },
     {
       "parameters": {
         "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst thinkingBudget = Number(cfg.Author_Thinking_Budget);\nconst maxTokens = thinkingBudget + 4096;\n\nconst userText = 'Refined prompt:\\n' + state.refined_prompt +\n  '\\n\\nPrevious author output:\\n' + state.latest_author_output +\n  '\\n\\nCritic feedback:\\n' + JSON.stringify(state.critic_json, null, 2) +\n  '\\n\\nInstruction: Produce the revised version. Address each item in suggested_revisions explicitly. Preserve the strengths identified.';\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    author_thinking_current: state.author_thinking_current,\n    iterations: state.iterations,\n    critic_json: state.critic_json,\n    anthropic_payload: {\n      model: cfg.Author_Model,\n      max_tokens: maxTokens,\n      thinking: { type: 'enabled', budget_tokens: thinkingBudget },\n      system: cfg.prompt_author,\n      messages: [{ role: 'user', content: userText }]\n    }\n  }\n}];"
       },
-      "id": "b4c5d6e7-f8a9-4b4c-a95e-6f7a8b9c0d1e",
+      "id": "37120133-4959-40fa-bb9f-0cc792cc69a6",
       "name": "Code: Build Author Revision Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [5200, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -5488,
+        -256
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Assembles Anthropic revision request. User message includes refined_prompt, previous author output, critic JSON, and the explicit revision instruction from the spec."
     },
     {
@@ -238,9 +324,18 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "x-api-key", "value": "={{ $('Code: Build Config').first().json.Anthropic_ApiKey }}" },
-            { "name": "anthropic-version", "value": "2023-06-01" },
-            { "name": "content-type", "value": "application/json" }
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Code: Build Config').first().json.Anthropic_ApiKey }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -249,36 +344,51 @@
         "body": "={{ JSON.stringify($json.anthropic_payload) }}",
         "options": {}
       },
-      "id": "c5d6e7f8-a9b0-4c5d-aa6f-7a8b9c0d1e2f",
+      "id": "5e17b91a-c476-49f7-8980-1c43db647235",
       "name": "HTTP: Author Revision",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [5600, 0],
-      "settings": { "onError": "continueRegularOutput" },
+      "position": [
+        -5264,
+        -256
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      },
       "notes": "Calls Claude Opus (Author_Model) with extended thinking to produce the revised draft addressing the Critic's suggested_revisions."
     },
     {
       "parameters": {
         "jsCode": "function extractAnthropicText(httpItem) {\n  const contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\n  const text = contentArr\n    .filter(function(block) { return block && block.type === 'text'; })\n    .map(function(block) { return String(block.text || ''); })\n    .join('\\n')\n    .trim();\n  return text || String(httpItem.output_text || httpItem.completion || '');\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Author Revision Payload').first().json;\n\nconst contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\nconst thinkingBlocks = contentArr.filter(function(block) { return block && block.type === 'thinking'; });\nconst revisedText = extractAnthropicText(httpItem);\n\nif (!revisedText) {\n  throw new Error('[Parse Author Revision] Empty text response from Author revision.');\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: revisedText,\n    author_thinking_current: thinkingBlocks,\n    iterations: buildData.iterations,\n    critic_json: buildData.critic_json\n  }\n}];"
       },
-      "id": "d6e7f8a9-b0c1-4d6e-ab7a-8b9c0d1e2f3a",
+      "id": "ef7dd3aa-805b-4a1c-9aba-7e6ac0ea3afb",
       "name": "Code: Parse Author Revision",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [6000, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -5040,
+        -256
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Updates latest_author_output with the revised text. Replaces author_thinking_current with this revision's thinking blocks. critic_json carried forward for the iteration trace entry."
     },
     {
       "parameters": {
         "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst userText = 'Refined prompt:\\n' + state.refined_prompt +\n  '\\n\\nRubric:\\n' + JSON.stringify(state.rubric, null, 2) +\n  '\\n\\nAuthor output to validate:\\n' + state.latest_author_output;\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    author_thinking_current: state.author_thinking_current,\n    iterations: state.iterations,\n    critic_json: state.critic_json,\n    gemini_payload: {\n      system_instruction: { parts: [{ text: cfg.prompt_moderator_validator }] },\n      contents: [{ role: 'user', parts: [{ text: userText }] }],\n      generationConfig: {\n        responseMimeType: 'application/json',\n        temperature: 0.2\n      }\n    }\n  }\n}];"
       },
-      "id": "e7f8a9b0-c1d2-4e7f-ac8b-9c0d1e2f3a4b",
+      "id": "036a7616-b252-4b3f-926e-bf92e408a2fe",
       "name": "Code: Build Validator Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [6400, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -4816,
+        -256
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Assembles Gemini request for prompt_moderator_validator. Passes refined_prompt, rubric, and latest_author_output for per-criterion scoring."
     },
     {
@@ -288,7 +398,10 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "content-type", "value": "application/json" }
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -297,94 +410,136 @@
         "body": "={{ JSON.stringify($json.gemini_payload) }}",
         "options": {}
       },
-      "id": "f8a9b0c1-d2e3-4f8a-ad9c-0d1e2f3a4b5c",
+      "id": "bcba1fda-5e7f-4360-bd9e-f7f2e6f57bfe",
       "name": "HTTP: Validate",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [6800, 0],
-      "settings": { "onError": "continueRegularOutput" },
+      "position": [
+        -4592,
+        -256
+      ],
+      "settings": {
+        "onError": "continueRegularOutput"
+      },
       "notes": "Calls Gemini (Moderator_Model) to score the revised author output against the rubric. Returns per_criterion scores, overall_score, verdict, and recommendation."
     },
     {
       "parameters": {
         "jsCode": "function extractGeminiText(httpItem) {\n  const parts = (httpItem && httpItem.candidates && httpItem.candidates[0] &&\n    httpItem.candidates[0].content && httpItem.candidates[0].content.parts) || [];\n  return parts.map(function(p) { return String(p.text || ''); }).join('\\n');\n}\n\nfunction parseJsonObject(rawText) {\n  if (!rawText) { throw new Error('Empty response text'); }\n  const cleaned = String(rawText).trim()\n    .replace(/^```[\\w-]*[\\r\\n]+/, '')\n    .replace(/[\\r\\n]+```$/, '')\n    .trim();\n  try {\n    return JSON.parse(cleaned);\n  } catch (err) {\n    const match = cleaned.match(/\\{[\\s\\S]*\\}/);\n    if (!match) { throw err; }\n    return JSON.parse(match[0]);\n  }\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Validator Payload').first().json;\n\nlet validatorJson;\ntry {\n  validatorJson = parseJsonObject(extractGeminiText(httpItem));\n} catch (err) {\n  throw new Error('[Parse Validator Response] Failed to parse Gemini validator response: ' + err.message);\n}\n\nconst overallScore = Number(validatorJson.overall_score) || 0;\n\nconst iterationEntry = {\n  iteration: buildData.retry_count,\n  author_output: buildData.latest_author_output,\n  author_thinking: buildData.author_thinking_current,\n  critic_json: buildData.critic_json,\n  validator_json: validatorJson\n};\n\nconst updatedIterations = (buildData.iterations || []).concat([iterationEntry]);\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: buildData.latest_author_output,\n    author_thinking_current: buildData.author_thinking_current,\n    iterations: updatedIterations,\n    validator_json: validatorJson,\n    overall_score: overallScore\n  }\n}];"
       },
-      "id": "a9b0c1d2-e3f4-4a9b-ae0d-1e2f3a4b5c6d",
+      "id": "a9dca126-f334-40cf-84bf-2388bea34e9e",
       "name": "Code: Parse Validator Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [7200, 0],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -4368,
+        -256
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Parses validator JSON and appends a complete iteration entry (author_output, author_thinking, critic_json, validator_json) to iterations[]. overall_score drives the downstream IF gate."
     },
     {
       "parameters": {
         "conditions": {
-          "options": {},
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "cond-pass-threshold",
               "leftValue": "={{ $json.overall_score }}",
               "rightValue": "={{ Number($('Code: Build Config').first().json.Pass_Threshold) }}",
-              "operator": { "type": "number", "operation": "gte" }
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
             }
           ]
         },
         "options": {}
       },
-      "id": "b0c1d2e3-f4a5-4b0c-af1e-2f3a4b5c6d7e",
+      "id": "4f0fb9f6-7c8c-4c0d-9651-b47a551f781c",
       "name": "IF: Pass Threshold Met",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [7600, 0],
+      "position": [
+        -4144,
+        -256
+      ],
       "notes": "True: overall_score >= Pass_Threshold → proceed to Build Trace with PASS. False: check retry eligibility."
     },
     {
       "parameters": {
         "conditions": {
-          "options": {},
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "cond-retry-eligible",
               "leftValue": "={{ $json.retry_count }}",
               "rightValue": "={{ Number($('Code: Build Config').first().json.Max_Critique_Passes) - 1 }}",
-              "operator": { "type": "number", "operation": "lt" }
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
             }
           ]
         },
         "options": {}
       },
-      "id": "c1d2e3f4-a5b6-4c1d-b02f-3a4b5c6d7e8f",
+      "id": "797de100-3fa1-44e0-81d7-e39595fadc15",
       "name": "IF: Retry Eligible",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [8000, 200],
+      "position": [
+        -3920,
+        -192
+      ],
       "notes": "True: retry_count < Max_Critique_Passes - 1 → increment and loop back to Critic. False: max passes reached, proceed to Build Trace with FAIL verdict."
     },
     {
       "parameters": {
         "jsCode": "const state = items[0].json;\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: (state.retry_count || 0) + 1,\n    latest_author_output: state.latest_author_output,\n    author_thinking_current: state.author_thinking_current || [],\n    iterations: state.iterations || []\n  }\n}];"
       },
-      "id": "d2e3f4a5-b6c7-4d2e-b13a-4b5c6d7e8f9a",
+      "id": "fa4b1815-5059-4c97-b733-6c8da3e18aa7",
       "name": "Code: Increment Retry",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [8400, 200],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -3696,
+        -64
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Increments retry_count by 1. Output connects to Merge: Critic Inputs input 1, re-entering the Critic stage with the updated count and accumulated state."
     },
     {
       "parameters": {
         "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst ts = new Date().toISOString();\nconst filename = 'deliberation_' + ts.replace(/[:.]/g, '-') + '.json';\n\nconst trace = {\n  timestamp: ts,\n  input: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context || ''\n  },\n  refined_prompt: state.refined_prompt,\n  rubric: state.rubric,\n  iterations: state.iterations || [],\n  final_output: state.latest_author_output,\n  final_verdict: (state.validator_json && state.validator_json.verdict)\n    ? state.validator_json.verdict\n    : 'UNKNOWN',\n  retry_count: state.retry_count || 0,\n  models_used: {\n    author: cfg.Author_Model,\n    critic: cfg.Critic_Model,\n    moderator: cfg.Moderator_Model\n  }\n};\n\nconst traceJson = JSON.stringify(trace, null, 2);\nconst buffer = Buffer.from(traceJson, 'utf8');\n\nreturn [{\n  json: {\n    trace_filename: filename,\n    latest_author_output: state.latest_author_output,\n    validator_json: state.validator_json || {},\n    retry_count: state.retry_count || 0\n  },\n  binary: {\n    data: {\n      data: buffer.toString('base64'),\n      mimeType: 'application/json',\n      fileName: filename,\n      fileExtension: 'json'\n    }\n  }\n}];"
       },
-      "id": "e3f4a5b6-c7d8-4e3f-b24b-5c6d7e8f9a0b",
+      "id": "c2fa6dee-9a90-4b56-81da-68982b328de3",
       "name": "Code: Build Trace",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [8000, -200],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -3696,
+        -304
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Assembles full trace JSON per spec (timestamp, input, refined_prompt, rubric, iterations[], final_output, final_verdict, retry_count, models_used). Filename: deliberation_<ISO>.json."
     },
     {
@@ -403,15 +558,20 @@
         },
         "options": {}
       },
-      "id": "f4a5b6c7-d8e9-4f4a-b35c-6d7e8f9a0b1c",
+      "id": "2f18784d-f0ec-4e5f-a186-dd8add0700bb",
       "name": "Drive: Upload Trace",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
-      "position": [8400, -200],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -3472,
+        -304
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "credentials": {
         "googleDriveOAuth2Api": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "id": "EQrAPC68ikUpw4ii",
           "name": "Google Drive OAuth2 API"
         }
       },
@@ -421,94 +581,299 @@
       "parameters": {
         "jsCode": "const traceData = $('Code: Build Trace').first().json;\nconst validatorJson = traceData.validator_json || {};\n\nreturn [{\n  json: {\n    status: String(validatorJson.verdict || 'UNKNOWN'),\n    final_output: traceData.latest_author_output,\n    validator_summary: {\n      overall_score: Number(validatorJson.overall_score) || 0,\n      verdict: String(validatorJson.verdict || 'UNKNOWN'),\n      recommendation: String(validatorJson.recommendation || '')\n    },\n    retry_count: traceData.retry_count || 0\n  }\n}];"
       },
-      "id": "a5b6c7d8-e9f0-4a5b-b46d-7e8f9a0b1c2d",
+      "id": "7abbe736-8c5d-4442-896e-161f2928cfb8",
       "name": "Code: Final Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [8800, -200],
-      "settings": { "onError": "stopWorkflow" },
+      "position": [
+        -3248,
+        -304
+      ],
+      "settings": {
+        "onError": "stopWorkflow"
+      },
       "notes": "Shapes the form response: status (validator verdict string), final_output, validator_summary, retry_count. This is the last node; formTrigger returns its $json as the response body."
     }
   ],
   "pinData": {},
   "connections": {
     "Trigger: Form": {
-      "main": [[{ "node": "n8n Table: Load Env Vars", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "n8n Table: Load Env Vars",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "n8n Table: Load Env Vars": {
-      "main": [[{ "node": "Code: Build Config", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Build Config": {
-      "main": [[{ "node": "Code: Build Refiner Payload", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Build Refiner Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Build Refiner Payload": {
-      "main": [[{ "node": "HTTP: Moderate Refine", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "HTTP: Moderate Refine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "HTTP: Moderate Refine": {
-      "main": [[{ "node": "Code: Parse Refined Prompt", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Parse Refined Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Parse Refined Prompt": {
-      "main": [[{ "node": "Code: Build Author v1 Payload", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Build Author v1 Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Build Author v1 Payload": {
-      "main": [[{ "node": "HTTP: Author v1", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "HTTP: Author v1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "HTTP: Author v1": {
-      "main": [[{ "node": "Code: Parse Author v1", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Parse Author v1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Parse Author v1": {
-      "main": [[{ "node": "Merge: Critic Inputs", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Merge: Critic Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Increment Retry": {
-      "main": [[{ "node": "Merge: Critic Inputs", "type": "main", "index": 1 }]]
+      "main": [
+        [
+          {
+            "node": "Merge: Critic Inputs",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
     },
     "Merge: Critic Inputs": {
-      "main": [[{ "node": "Code: Build Critic Payload", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Build Critic Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Build Critic Payload": {
-      "main": [[{ "node": "HTTP: Critic", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "HTTP: Critic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "HTTP: Critic": {
-      "main": [[{ "node": "Code: Parse Critic Response", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Parse Critic Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Parse Critic Response": {
-      "main": [[{ "node": "Code: Build Author Revision Payload", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Build Author Revision Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Build Author Revision Payload": {
-      "main": [[{ "node": "HTTP: Author Revision", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "HTTP: Author Revision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "HTTP: Author Revision": {
-      "main": [[{ "node": "Code: Parse Author Revision", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Parse Author Revision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Parse Author Revision": {
-      "main": [[{ "node": "Code: Build Validator Payload", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Build Validator Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Build Validator Payload": {
-      "main": [[{ "node": "HTTP: Validate", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "HTTP: Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "HTTP: Validate": {
-      "main": [[{ "node": "Code: Parse Validator Response", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Parse Validator Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Code: Parse Validator Response": {
-      "main": [[{ "node": "IF: Pass Threshold Met", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "IF: Pass Threshold Met",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "IF: Pass Threshold Met": {
       "main": [
-        [{ "node": "Code: Build Trace", "type": "main", "index": 0 }],
-        [{ "node": "IF: Retry Eligible", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Code: Build Trace",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF: Retry Eligible",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "IF: Retry Eligible": {
       "main": [
-        [{ "node": "Code: Increment Retry", "type": "main", "index": 0 }],
-        [{ "node": "Code: Build Trace", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Code: Increment Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code: Build Trace",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Code: Build Trace": {
-      "main": [[{ "node": "Drive: Upload Trace", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Drive: Upload Trace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Drive: Upload Trace": {
-      "main": [[{ "node": "Code: Final Output", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Code: Final Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": false,
@@ -516,10 +881,18 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "b3c4d5e6-f7a8-4b3c-9d4e-5f6a7b8c9d0e",
+  "versionId": "d3ae6bde-961e-4b6b-95d2-69a0d9cefe37",
   "meta": {
-    "instanceId": "0000000000000000000000000000000000000000000000000000000000000000"
+    "templateCredsSetupCompleted": true,
+    "instanceId": "64a04bbfa553a6ed8ce67fc008973a3dcc3ed6643470422bbe3c9cbd17a4a383"
   },
-  "id": "MultiLLMDeliberation01",
-  "tags": []
+  "id": "WwWJp7JvGAaeD8c5",
+  "tags": [
+    {
+      "updatedAt": "2026-05-05T13:32:25.357Z",
+      "createdAt": "2026-05-05T13:32:25.357Z",
+      "id": "VyZqC89AuJnM9AiD",
+      "name": "LLMAutomation"
+    }
+  ]
 }
