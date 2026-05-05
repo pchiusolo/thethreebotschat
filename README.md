@@ -147,6 +147,8 @@ Every run writes a JSON file to Google Drive:
   "input": { "draft_prompt": "...", "extra_context": "..." },
   "refined_prompt": "...",
   "rubric": [{ "criterion": "...", "description": "...", "weight": 0.2, "max_score": 10 }],
+  "initial_author_output": "...",
+  "initial_author_thinking": ["<v1 thinking blocks, immutable snapshot>"],
   "iterations": [
     {
       "iteration": 0,

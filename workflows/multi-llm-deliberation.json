@@ -5,7 +5,7 @@
       "parameters": {
         "path": "61f9fdf2-1215-49cd-9555-336e88fe7600",
         "formTitle": "Multi-LLM Deliberation",
-        "formDescription": "Submit a draft prompt for Author–Critic–Moderator deliberation.",
+        "formDescription": "Submit a draft prompt for Author\u2013Critic\u2013Moderator deliberation.",
         "formFields": {
           "values": [
             {
@@ -71,7 +71,7 @@
       "settings": {
         "onError": "stopWorkflow"
       },
-      "notes": "Builds flat Name→Value map from EnvironmentVariables rows. Validates all 15 required keys. Access values as: $('Code: Build Config').first().json.KeyName"
+      "notes": "Builds flat Name\u2192Value map from EnvironmentVariables rows. Validates all 15 required keys. Access values as: $('Code: Build Config').first().json.KeyName"
     },
     {
       "parameters": {
@@ -198,7 +198,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function extractAnthropicText(httpItem) {\n  const contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\n  const text = contentArr\n    .filter(function(block) { return block && block.type === 'text'; })\n    .map(function(block) { return String(block.text || ''); })\n    .join('\\n')\n    .trim();\n  return text || String(httpItem.output_text || httpItem.completion || '');\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Author v1 Payload').first().json;\n\nconst contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\nconst thinkingBlocks = contentArr.filter(function(block) { return block && block.type === 'thinking'; });\nconst authorText = extractAnthropicText(httpItem);\n\nif (!authorText) {\n  throw new Error('[Parse Author v1] Empty text response from Author v1.');\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: authorText,\n    author_thinking_current: thinkingBlocks,\n    iterations: buildData.iterations\n  }\n}];"
+        "jsCode": "function extractAnthropicText(httpItem) {\n  const contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\n  const text = contentArr\n    .filter(function(block) { return block && block.type === 'text'; })\n    .map(function(block) { return String(block.text || ''); })\n    .join('\\n')\n    .trim();\n  return text || String(httpItem.output_text || httpItem.completion || '');\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Author v1 Payload').first().json;\n\nconst contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\nconst thinkingBlocks = contentArr.filter(function(block) { return block && block.type === 'thinking'; });\nconst authorText = extractAnthropicText(httpItem);\n\nif (!authorText) {\n  throw new Error('[Parse Author v1] Empty text response from Author v1.');\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: authorText,\n    latest_author_thinking: thinkingBlocks,\n    initial_author_output: authorText,\n    initial_author_thinking: thinkingBlocks,\n    iterations: buildData.iterations\n  }\n}];"
       },
       "id": "2ff79563-543e-453d-9f7e-b4c66cd574a6",
       "name": "Code: Parse Author v1",
@@ -211,7 +211,7 @@
       "settings": {
         "onError": "stopWorkflow"
       },
-      "notes": "Extracts concatenated text blocks into latest_author_output. Thinking blocks stored in author_thinking_current for trace only; they never enter downstream model calls."
+      "notes": "Extracts concatenated text blocks into latest_author_output (working) and initial_author_output (immutable v1 snapshot). Thinking blocks stored as latest_author_thinking and initial_author_thinking; neither flows into downstream model calls."
     },
     {
       "parameters": {
@@ -236,7 +236,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst userText = 'Refined prompt:\\n' + state.refined_prompt +\n  '\\n\\nAuthor output:\\n' + state.latest_author_output;\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    author_thinking_current: state.author_thinking_current || [],\n    iterations: state.iterations || [],\n    openai_payload: {\n      model: cfg.Critic_Model,\n      reasoning_effort: cfg.Critic_Reasoning_Effort,\n      response_format: { type: 'json_object' },\n      messages: [\n        { role: 'system', content: cfg.prompt_critic },\n        { role: 'user', content: userText }\n      ]\n    }\n  }\n}];"
+        "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst userText = 'Refined prompt:\\n' + state.refined_prompt +\n  '\\n\\nAuthor output:\\n' + state.latest_author_output;\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    latest_author_thinking: state.latest_author_thinking || [],\n    initial_author_output: state.initial_author_output || '',\n    initial_author_thinking: state.initial_author_thinking || [],\n    iterations: state.iterations || [],\n    openai_payload: {\n      model: cfg.Critic_Model,\n      reasoning_effort: cfg.Critic_Reasoning_Effort,\n      response_format: { type: 'json_object' },\n      messages: [\n        { role: 'system', content: cfg.prompt_critic },\n        { role: 'user', content: userText }\n      ]\n    }\n  }\n}];"
       },
       "id": "54cebc09-548c-4746-b987-3b548b125c47",
       "name": "Code: Build Critic Payload",
@@ -249,7 +249,7 @@
       "settings": {
         "onError": "stopWorkflow"
       },
-      "notes": "Assembles OpenAI request for Critic_Model. author_thinking_current is carried in state but never inserted into the user message, keeping thinking blocks out of downstream calls."
+      "notes": "Assembles OpenAI request for Critic_Model. latest_author_thinking is carried in state but never inserted into the user message, keeping thinking blocks out of downstream calls."
     },
     {
       "parameters": {
@@ -285,7 +285,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function extractOpenAIText(httpItem) {\n  return String((httpItem && httpItem.choices && httpItem.choices[0] &&\n    httpItem.choices[0].message && httpItem.choices[0].message.content) || '');\n}\n\nfunction parseJsonObject(rawText) {\n  if (!rawText) { throw new Error('Empty response text'); }\n  const cleaned = String(rawText).trim()\n    .replace(/^```[\\w-]*[\\r\\n]+/, '')\n    .replace(/[\\r\\n]+```$/, '')\n    .trim();\n  try {\n    return JSON.parse(cleaned);\n  } catch (err) {\n    const match = cleaned.match(/\\{[\\s\\S]*\\}/);\n    if (!match) { throw err; }\n    return JSON.parse(match[0]);\n  }\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Critic Payload').first().json;\n\nlet criticJson;\ntry {\n  criticJson = parseJsonObject(extractOpenAIText(httpItem));\n} catch (err) {\n  throw new Error('[Parse Critic Response] Failed to parse Critic response: ' + err.message);\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: buildData.latest_author_output,\n    author_thinking_current: buildData.author_thinking_current,\n    iterations: buildData.iterations,\n    critic_json: criticJson\n  }\n}];"
+        "jsCode": "function extractOpenAIText(httpItem) {\n  return String((httpItem && httpItem.choices && httpItem.choices[0] &&\n    httpItem.choices[0].message && httpItem.choices[0].message.content) || '');\n}\n\nfunction parseJsonObject(rawText) {\n  if (!rawText) { throw new Error('Empty response text'); }\n  const cleaned = String(rawText).trim()\n    .replace(/^```[\\w-]*[\\r\\n]+/, '')\n    .replace(/[\\r\\n]+```$/, '')\n    .trim();\n  try {\n    return JSON.parse(cleaned);\n  } catch (err) {\n    const match = cleaned.match(/\\{[\\s\\S]*\\}/);\n    if (!match) { throw err; }\n    return JSON.parse(match[0]);\n  }\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Critic Payload').first().json;\n\nlet criticJson;\ntry {\n  criticJson = parseJsonObject(extractOpenAIText(httpItem));\n} catch (err) {\n  throw new Error('[Parse Critic Response] Failed to parse Critic response: ' + err.message);\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: buildData.latest_author_output,\n    latest_author_thinking: buildData.latest_author_thinking,\n    initial_author_output: buildData.initial_author_output || '',\n    initial_author_thinking: buildData.initial_author_thinking || [],\n    iterations: buildData.iterations,\n    critic_json: criticJson\n  }\n}];"
       },
       "id": "120264aa-e044-4f43-8586-b37138307a85",
       "name": "Code: Parse Critic Response",
@@ -302,7 +302,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst thinkingBudget = Number(cfg.Author_Thinking_Budget);\nconst maxTokens = thinkingBudget + 4096;\n\nconst userText = 'Refined prompt:\\n' + state.refined_prompt +\n  '\\n\\nPrevious author output:\\n' + state.latest_author_output +\n  '\\n\\nCritic feedback:\\n' + JSON.stringify(state.critic_json, null, 2) +\n  '\\n\\nInstruction: Produce the revised version. Address each item in suggested_revisions explicitly. Preserve the strengths identified.';\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    author_thinking_current: state.author_thinking_current,\n    iterations: state.iterations,\n    critic_json: state.critic_json,\n    anthropic_payload: {\n      model: cfg.Author_Model,\n      max_tokens: maxTokens,\n      thinking: { type: 'enabled', budget_tokens: thinkingBudget },\n      system: cfg.prompt_author,\n      messages: [{ role: 'user', content: userText }]\n    }\n  }\n}];"
+        "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst thinkingBudget = Number(cfg.Author_Thinking_Budget);\nconst maxTokens = thinkingBudget + 4096;\n\nconst userText = 'Refined prompt:\\n' + state.refined_prompt +\n  '\\n\\nPrevious author output:\\n' + state.latest_author_output +\n  '\\n\\nCritic feedback:\\n' + JSON.stringify(state.critic_json, null, 2) +\n  '\\n\\nInstruction: Produce the revised version. Address each item in suggested_revisions explicitly. Preserve the strengths identified.';\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    latest_author_thinking: state.latest_author_thinking,\n    initial_author_output: state.initial_author_output || '',\n    initial_author_thinking: state.initial_author_thinking || [],\n    iterations: state.iterations,\n    critic_json: state.critic_json,\n    anthropic_payload: {\n      model: cfg.Author_Model,\n      max_tokens: maxTokens,\n      thinking: { type: 'enabled', budget_tokens: thinkingBudget },\n      system: cfg.prompt_author,\n      messages: [{ role: 'user', content: userText }]\n    }\n  }\n}];"
       },
       "id": "37120133-4959-40fa-bb9f-0cc792cc69a6",
       "name": "Code: Build Author Revision Payload",
@@ -359,7 +359,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function extractAnthropicText(httpItem) {\n  const contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\n  const text = contentArr\n    .filter(function(block) { return block && block.type === 'text'; })\n    .map(function(block) { return String(block.text || ''); })\n    .join('\\n')\n    .trim();\n  return text || String(httpItem.output_text || httpItem.completion || '');\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Author Revision Payload').first().json;\n\nconst contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\nconst thinkingBlocks = contentArr.filter(function(block) { return block && block.type === 'thinking'; });\nconst revisedText = extractAnthropicText(httpItem);\n\nif (!revisedText) {\n  throw new Error('[Parse Author Revision] Empty text response from Author revision.');\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: revisedText,\n    author_thinking_current: thinkingBlocks,\n    iterations: buildData.iterations,\n    critic_json: buildData.critic_json\n  }\n}];"
+        "jsCode": "function extractAnthropicText(httpItem) {\n  const contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\n  const text = contentArr\n    .filter(function(block) { return block && block.type === 'text'; })\n    .map(function(block) { return String(block.text || ''); })\n    .join('\\n')\n    .trim();\n  return text || String(httpItem.output_text || httpItem.completion || '');\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Author Revision Payload').first().json;\n\nconst contentArr = Array.isArray(httpItem.content) ? httpItem.content : [];\nconst thinkingBlocks = contentArr.filter(function(block) { return block && block.type === 'thinking'; });\nconst revisedText = extractAnthropicText(httpItem);\n\nif (!revisedText) {\n  throw new Error('[Parse Author Revision] Empty text response from Author revision.');\n}\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: revisedText,\n    latest_author_thinking: thinkingBlocks,\n    initial_author_output: buildData.initial_author_output || '',\n    initial_author_thinking: buildData.initial_author_thinking || [],\n    iterations: buildData.iterations,\n    critic_json: buildData.critic_json\n  }\n}];"
       },
       "id": "ef7dd3aa-805b-4a1c-9aba-7e6ac0ea3afb",
       "name": "Code: Parse Author Revision",
@@ -372,11 +372,11 @@
       "settings": {
         "onError": "stopWorkflow"
       },
-      "notes": "Updates latest_author_output with the revised text. Replaces author_thinking_current with this revision's thinking blocks. critic_json carried forward for the iteration trace entry."
+      "notes": "Updates latest_author_output and latest_author_thinking with the revised draft. initial_author_output and initial_author_thinking are immutable v1 snapshots carried through unchanged."
     },
     {
       "parameters": {
-        "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst userText = 'Refined prompt:\\n' + state.refined_prompt +\n  '\\n\\nRubric:\\n' + JSON.stringify(state.rubric, null, 2) +\n  '\\n\\nAuthor output to validate:\\n' + state.latest_author_output;\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    author_thinking_current: state.author_thinking_current,\n    iterations: state.iterations,\n    critic_json: state.critic_json,\n    gemini_payload: {\n      system_instruction: { parts: [{ text: cfg.prompt_moderator_validator }] },\n      contents: [{ role: 'user', parts: [{ text: userText }] }],\n      generationConfig: {\n        responseMimeType: 'application/json',\n        temperature: 0.2\n      }\n    }\n  }\n}];"
+        "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst userText = 'Refined prompt:\\n' + state.refined_prompt +\n  '\\n\\nRubric:\\n' + JSON.stringify(state.rubric, null, 2) +\n  '\\n\\nAuthor output to validate:\\n' + state.latest_author_output;\n\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: state.retry_count,\n    latest_author_output: state.latest_author_output,\n    latest_author_thinking: state.latest_author_thinking,\n    initial_author_output: state.initial_author_output || '',\n    initial_author_thinking: state.initial_author_thinking || [],\n    iterations: state.iterations,\n    critic_json: state.critic_json,\n    gemini_payload: {\n      system_instruction: { parts: [{ text: cfg.prompt_moderator_validator }] },\n      contents: [{ role: 'user', parts: [{ text: userText }] }],\n      generationConfig: {\n        responseMimeType: 'application/json',\n        temperature: 0.2\n      }\n    }\n  }\n}];"
       },
       "id": "036a7616-b252-4b3f-926e-bf92e408a2fe",
       "name": "Code: Build Validator Payload",
@@ -425,7 +425,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function extractGeminiText(httpItem) {\n  const parts = (httpItem && httpItem.candidates && httpItem.candidates[0] &&\n    httpItem.candidates[0].content && httpItem.candidates[0].content.parts) || [];\n  return parts.map(function(p) { return String(p.text || ''); }).join('\\n');\n}\n\nfunction parseJsonObject(rawText) {\n  if (!rawText) { throw new Error('Empty response text'); }\n  const cleaned = String(rawText).trim()\n    .replace(/^```[\\w-]*[\\r\\n]+/, '')\n    .replace(/[\\r\\n]+```$/, '')\n    .trim();\n  try {\n    return JSON.parse(cleaned);\n  } catch (err) {\n    const match = cleaned.match(/\\{[\\s\\S]*\\}/);\n    if (!match) { throw err; }\n    return JSON.parse(match[0]);\n  }\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Validator Payload').first().json;\n\nlet validatorJson;\ntry {\n  validatorJson = parseJsonObject(extractGeminiText(httpItem));\n} catch (err) {\n  throw new Error('[Parse Validator Response] Failed to parse Gemini validator response: ' + err.message);\n}\n\nconst overallScore = Number(validatorJson.overall_score) || 0;\n\nconst iterationEntry = {\n  iteration: buildData.retry_count,\n  author_output: buildData.latest_author_output,\n  author_thinking: buildData.author_thinking_current,\n  critic_json: buildData.critic_json,\n  validator_json: validatorJson\n};\n\nconst updatedIterations = (buildData.iterations || []).concat([iterationEntry]);\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: buildData.latest_author_output,\n    author_thinking_current: buildData.author_thinking_current,\n    iterations: updatedIterations,\n    validator_json: validatorJson,\n    overall_score: overallScore\n  }\n}];"
+        "jsCode": "function extractGeminiText(httpItem) {\n  const parts = (httpItem && httpItem.candidates && httpItem.candidates[0] &&\n    httpItem.candidates[0].content && httpItem.candidates[0].content.parts) || [];\n  return parts.map(function(p) { return String(p.text || ''); }).join('\\n');\n}\n\nfunction parseJsonObject(rawText) {\n  if (!rawText) { throw new Error('Empty response text'); }\n  const cleaned = String(rawText).trim()\n    .replace(/^```[\\w-]*[\\r\\n]+/, '')\n    .replace(/[\\r\\n]+```$/, '')\n    .trim();\n  try {\n    return JSON.parse(cleaned);\n  } catch (err) {\n    const match = cleaned.match(/\\{[\\s\\S]*\\}/);\n    if (!match) { throw err; }\n    return JSON.parse(match[0]);\n  }\n}\n\nconst httpItem = items[0].json;\nconst buildData = $('Code: Build Validator Payload').first().json;\n\nlet validatorJson;\ntry {\n  validatorJson = parseJsonObject(extractGeminiText(httpItem));\n} catch (err) {\n  throw new Error('[Parse Validator Response] Failed to parse Gemini validator response: ' + err.message);\n}\n\nconst overallScore = Number(validatorJson.overall_score) || 0;\n\nconst iterationEntry = {\n  iteration: buildData.retry_count,\n  author_output: buildData.latest_author_output,\n  author_thinking: buildData.latest_author_thinking,\n  critic_json: buildData.critic_json,\n  validator_json: validatorJson\n};\n\nconst updatedIterations = (buildData.iterations || []).concat([iterationEntry]);\n\nreturn [{\n  json: {\n    draft_prompt: buildData.draft_prompt,\n    extra_context: buildData.extra_context,\n    refined_prompt: buildData.refined_prompt,\n    rubric: buildData.rubric,\n    retry_count: buildData.retry_count,\n    latest_author_output: buildData.latest_author_output,\n    latest_author_thinking: buildData.latest_author_thinking,\n    initial_author_output: buildData.initial_author_output || '',\n    initial_author_thinking: buildData.initial_author_thinking || [],\n    iterations: updatedIterations,\n    validator_json: validatorJson,\n    overall_score: overallScore\n  }\n}];"
       },
       "id": "a9dca126-f334-40cf-84bf-2388bea34e9e",
       "name": "Code: Parse Validator Response",
@@ -472,7 +472,7 @@
         -4144,
         -256
       ],
-      "notes": "True: overall_score >= Pass_Threshold → proceed to Build Trace with PASS. False: check retry eligibility."
+      "notes": "True: overall_score >= Pass_Threshold \u2192 proceed to Build Trace with PASS. False: check retry eligibility."
     },
     {
       "parameters": {
@@ -506,11 +506,11 @@
         -3920,
         -192
       ],
-      "notes": "True: retry_count < Max_Critique_Passes - 1 → increment and loop back to Critic. False: max passes reached, proceed to Build Trace with FAIL verdict."
+      "notes": "True: retry_count < Max_Critique_Passes - 1 \u2192 increment and loop back to Critic. False: max passes reached, proceed to Build Trace with FAIL verdict."
     },
     {
       "parameters": {
-        "jsCode": "const state = items[0].json;\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: (state.retry_count || 0) + 1,\n    latest_author_output: state.latest_author_output,\n    author_thinking_current: state.author_thinking_current || [],\n    iterations: state.iterations || []\n  }\n}];"
+        "jsCode": "const state = items[0].json;\nreturn [{\n  json: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context,\n    refined_prompt: state.refined_prompt,\n    rubric: state.rubric,\n    retry_count: (state.retry_count || 0) + 1,\n    latest_author_output: state.latest_author_output,\n    latest_author_thinking: state.latest_author_thinking || [],\n    initial_author_output: state.initial_author_output || '',\n    initial_author_thinking: state.initial_author_thinking || [],\n    iterations: state.iterations || []\n  }\n}];"
       },
       "id": "fa4b1815-5059-4c97-b733-6c8da3e18aa7",
       "name": "Code: Increment Retry",
@@ -523,11 +523,11 @@
       "settings": {
         "onError": "stopWorkflow"
       },
-      "notes": "Increments retry_count by 1. Output connects to Merge: Critic Inputs input 1, re-entering the Critic stage with the updated count and accumulated state."
+      "notes": "Increments retry_count by 1. Carries immutable initial_author_output/thinking and working latest_author_thinking forward. Output connects to Merge: Critic Inputs input 1."
     },
     {
       "parameters": {
-        "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst ts = new Date().toISOString();\nconst filename = 'deliberation_' + ts.replace(/[:.]/g, '-') + '.json';\n\nconst trace = {\n  timestamp: ts,\n  input: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context || ''\n  },\n  refined_prompt: state.refined_prompt,\n  rubric: state.rubric,\n  iterations: state.iterations || [],\n  final_output: state.latest_author_output,\n  final_verdict: (state.validator_json && state.validator_json.verdict)\n    ? state.validator_json.verdict\n    : 'UNKNOWN',\n  retry_count: state.retry_count || 0,\n  models_used: {\n    author: cfg.Author_Model,\n    critic: cfg.Critic_Model,\n    moderator: cfg.Moderator_Model\n  }\n};\n\nconst traceJson = JSON.stringify(trace, null, 2);\nconst buffer = Buffer.from(traceJson, 'utf8');\n\nreturn [{\n  json: {\n    trace_filename: filename,\n    latest_author_output: state.latest_author_output,\n    validator_json: state.validator_json || {},\n    retry_count: state.retry_count || 0\n  },\n  binary: {\n    data: {\n      data: buffer.toString('base64'),\n      mimeType: 'application/json',\n      fileName: filename,\n      fileExtension: 'json'\n    }\n  }\n}];"
+        "jsCode": "const cfg = $('Code: Build Config').first().json;\nconst state = items[0].json;\n\nconst ts = new Date().toISOString();\nconst filename = 'deliberation_' + ts.replace(/[:.]/g, '-') + '.json';\n\nconst trace = {\n  timestamp: ts,\n  input: {\n    draft_prompt: state.draft_prompt,\n    extra_context: state.extra_context || ''\n  },\n  refined_prompt: state.refined_prompt,\n  rubric: state.rubric,\n  initial_author_output: state.initial_author_output || '',\n  initial_author_thinking: state.initial_author_thinking || [],\n  iterations: state.iterations || [],\n  final_output: state.latest_author_output,\n  final_verdict: (state.validator_json && state.validator_json.verdict)\n    ? state.validator_json.verdict\n    : 'UNKNOWN',\n  retry_count: state.retry_count || 0,\n  models_used: {\n    author: cfg.Author_Model,\n    critic: cfg.Critic_Model,\n    moderator: cfg.Moderator_Model\n  }\n};\n\nconst traceJson = JSON.stringify(trace, null, 2);\nconst buffer = Buffer.from(traceJson, 'utf8');\n\nreturn [{\n  json: {\n    trace_filename: filename,\n    latest_author_output: state.latest_author_output,\n    validator_json: state.validator_json || {},\n    retry_count: state.retry_count || 0\n  },\n  binary: {\n    data: {\n      data: buffer.toString('base64'),\n      mimeType: 'application/json',\n      fileName: filename,\n      fileExtension: 'json'\n    }\n  }\n}];"
       },
       "id": "c2fa6dee-9a90-4b56-81da-68982b328de3",
       "name": "Code: Build Trace",
@@ -540,7 +540,7 @@
       "settings": {
         "onError": "stopWorkflow"
       },
-      "notes": "Assembles full trace JSON per spec (timestamp, input, refined_prompt, rubric, iterations[], final_output, final_verdict, retry_count, models_used). Filename: deliberation_<ISO>.json."
+      "notes": "Assembles full trace JSON per spec including initial_author_output and initial_author_thinking v1 snapshots. Filename: deliberation_<ISO>.json."
     },
     {
       "parameters": {
